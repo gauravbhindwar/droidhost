@@ -90,15 +90,107 @@ class VmManager(
         return if (nativeLib.exists()) nativeLib else target
     }
 
+    fun getProotExecutable(): File? {
+        val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
+        if (nativeLib.exists() && nativeLib.canExecute()) {
+            return nativeLib
+        }
+        return null
+    }
+
+    fun getRootfsDirectory(): File {
+        return File(context.filesDir, "rootfs")
+    }
+
+    fun ensureLinuxRootfs(): File {
+        val rootfsDir = getRootfsDirectory()
+        val osRelease = File(rootfsDir, "etc/os-release")
+        if (osRelease.exists() && osRelease.length() > 0) {
+            return rootfsDir
+        }
+
+        rootfsDir.mkdirs()
+        try {
+            val assetName = "vm/alpine-rootfs.tar.gz"
+            val tempArchive = File(context.cacheDir, "alpine-rootfs.tar.gz")
+            context.assets.open(assetName).use { input ->
+                FileOutputStream(tempArchive).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            val pb = ProcessBuilder("/system/bin/tar", "-xzf", tempArchive.absolutePath, "-C", rootfsDir.absolutePath)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            proc.waitFor()
+            tempArchive.delete()
+        } catch (e: Exception) {
+            android.util.Log.e("VmManager", "Error extracting rootfs: ${e.message}")
+        }
+
+        try {
+            File(rootfsDir, "tmp").apply { mkdirs(); setWritable(true, false) }
+            File(rootfsDir, "etc").mkdirs()
+            val resolvConf = File(rootfsDir, "etc/resolv.conf")
+            if (!resolvConf.exists()) {
+                resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+            }
+        } catch (_: Exception) {}
+
+        return rootfsDir
+    }
+
+    fun getLoginShellScript(): File {
+        val binDir = File(context.filesDir, "bin").apply { mkdirs() }
+        val script = File(binDir, "login-shell.sh")
+        val content = """
+            #!/system/bin/sh
+            PROOT="${'$'}1"
+            ROOTFS="${'$'}2"
+            shift 2
+
+            export HOME=/root
+            export USER=root
+            export TERM=xterm-256color
+            export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            export BASH_ENV=/etc/bash/bashrc
+            export ENV=/etc/bash/bashrc
+
+            if [ -x "${'$'}PROOT" ] && [ -d "${'$'}ROOTFS" ] && [ -f "${'$'}ROOTFS/etc/os-release" ]; then
+                if [ "${'$'}#" -gt 0 ]; then
+                    exec "${'$'}PROOT" -0 -l -r "${'$'}ROOTFS" -b /proc -b /sys -b /dev -w /root /bin/bash "${'$'}@"
+                else
+                    exec "${'$'}PROOT" -0 -l -r "${'$'}ROOTFS" -b /proc -b /sys -b /dev -w /root /bin/bash -i
+                fi
+            else
+                exec /system/bin/sh "${'$'}@"
+            fi
+        """.trimIndent()
+        script.writeText(content)
+        script.setExecutable(true, false)
+        script.setReadable(true, false)
+        return script
+    }
+
     private fun startAgentProcess(token: String): Boolean {
         stopAgentProcess()
         val agentExe = getAgentExecutable()
         return try {
+            ensureLinuxRootfs()
+            val prootExe = getProotExecutable()
+            val rootfsDir = getRootfsDirectory()
+            val loginScript = getLoginShellScript()
+
+            val shellCmd = if (prootExe != null && File(rootfsDir, "etc/os-release").exists()) {
+                "/system/bin/sh ${loginScript.absolutePath} ${prootExe.absolutePath} ${rootfsDir.absolutePath}"
+            } else {
+                "/system/bin/sh"
+            }
+
             val cmd = listOf(
                 agentExe.absolutePath,
                 "-addr", "0.0.0.0:8899",
                 "-token", token,
-                "-shell", "/system/bin/sh"
+                "-shell", shellCmd
             )
             val pb = ProcessBuilder(cmd)
             pb.directory(context.filesDir)
