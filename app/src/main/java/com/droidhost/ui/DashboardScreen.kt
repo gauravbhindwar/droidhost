@@ -594,38 +594,43 @@ private fun VmControlCard(state: DashboardState, viewModel: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "ARM64 Linux VM",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "${state.vmConfig.cpuCores} Cores · ${state.vmConfig.ramMb} MB RAM · ${state.vmConfig.diskGb} GB Disk",
+                        "${state.vmConfig.cpuCores} Cores · ${state.vmConfig.ramMb} MB · ${state.vmConfig.diskGb} GB",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Spacer(Modifier.width(8.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     when (state.vmState) {
                         VmState.RUNNING -> {
                             FilledTonalButton(
                                 onClick = { viewModel.restartVm() },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Restart", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Refresh, contentDescription = "Restart", modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Restart")
+                                Text("Restart", maxLines = 1, softWrap = false)
                             }
                             Button(
                                 onClick = { viewModel.stopVm() },
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                             ) {
-                                Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Stop")
+                                Text("Stop", maxLines = 1, softWrap = false)
                             }
                         }
                         VmState.STARTING -> {
@@ -641,7 +646,7 @@ private fun VmControlCard(state: DashboardState, viewModel: MainViewModel) {
                             ) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = "Start", modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Start VM")
+                                Text("Start VM", maxLines = 1, softWrap = false)
                             }
                         }
                     }

@@ -21,10 +21,20 @@ SOCKET=${SOCKET:-$VM_DIR/qemu-monitor.sock}
 
 TOKEN=$(cat "$AGENT_TOKEN_FILE")
 
+# Determine whether QEMU is a shell script wrapper or a native ELF binary.
 # On Android 10-18+ (API 29-36+), files in writable app storage cannot be execve'd directly.
 # If QEMU is a shell script wrapper or runner, invoke via /system/bin/sh.
 # If it is an APK native library in nativeLibraryDir, execute it directly.
-if [ -f "$QEMU" ] && head -n 1 "$QEMU" 2>/dev/null | grep -q "^#!"; then
+IS_SCRIPT="${QEMU_IS_SCRIPT:-0}"
+if [ "$IS_SCRIPT" = "0" ] && [ -f "$QEMU" ]; then
+  FIRST_LINE=""
+  read -r FIRST_LINE < "$QEMU" 2>/dev/null || true
+  case "$FIRST_LINE" in
+    "#!"*) IS_SCRIPT="1" ;;
+  esac
+fi
+
+if [ "$IS_SCRIPT" = "1" ]; then
   exec /system/bin/sh "$QEMU" \
     -machine virt,gic-version=3 \
     -cpu max \
