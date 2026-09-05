@@ -124,7 +124,6 @@ fun DashboardScreen(
 
         // Battery Optimization Warning Banner
         if (state.isBatteryOptimized) {
-            val ctx = androidx.compose.ui.platform.LocalContext.current
             item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
