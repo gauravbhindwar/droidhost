@@ -17,7 +17,7 @@ type Server struct {
 }
 
 func NewServer(shell string) *Server {
-	return &Server{shell: shell, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return false }}}
+	return &Server{shell: shell, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
 }
 
 // Handler starts a shell inside the VM. The websocket protocol is intentionally
