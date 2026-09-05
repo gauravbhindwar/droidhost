@@ -12,6 +12,9 @@ import com.droidhost.data.HttpAgentRepository
 import com.droidhost.domain.VmState
 import kotlinx.coroutines.launch
 
+import android.content.pm.ServiceInfo
+import android.os.Build
+
 class ServerModeService : LifecycleService() {
 
     private lateinit var vmManager: VmManager
@@ -30,6 +33,14 @@ class ServerModeService : LifecycleService() {
         }
     }
 
+    private fun startForegroundCompat(id: Int, notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(id, notification)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
@@ -39,11 +50,11 @@ class ServerModeService : LifecycleService() {
                 stopSelf()
             }
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, notification(vmManager.vmState.value))
+                startForegroundCompat(NOTIFICATION_ID, notification(vmManager.vmState.value))
                 vmManager.start()
             }
             ACTION_RESTART -> {
-                startForeground(NOTIFICATION_ID, notification(VmState.STARTING))
+                startForegroundCompat(NOTIFICATION_ID, notification(VmState.STARTING))
                 vmManager.restart()
             }
         }

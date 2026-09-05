@@ -28,6 +28,7 @@ fun SettingsScreen(
     var diskGb by remember(state.vmConfig.diskGb) { mutableFloatStateOf(state.vmConfig.diskGb.toFloat()) }
     var autoStart by remember(state.vmConfig.autoStart) { mutableStateOf(state.vmConfig.autoStart) }
     var showDownloadDialog by remember { mutableStateOf(false) }
+    var showPreSetupDialog by remember { mutableStateOf(false) }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importBundleZip(it) }
@@ -289,17 +290,27 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelMedium
                     )
 
+                    Button(
+                        onClick = { showPreSetupDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.SettingsSuggest, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Pre-Setup VM (Automatic)", fontWeight = FontWeight.Bold)
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
+                        OutlinedButton(
                             onClick = { filePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Import Bundle (.zip)")
+                            Text("Import (.zip)")
                         }
                         OutlinedButton(
                             onClick = { showDownloadDialog = true },
@@ -313,6 +324,17 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    if (showPreSetupDialog) {
+        PreSetupDialog(
+            diskSizeGb = state.vmConfig.diskGb,
+            onDismiss = { showPreSetupDialog = false },
+            onStartPreSetup = {
+                showPreSetupDialog = false
+                viewModel.runPreSetup()
+            }
+        )
     }
 
     if (showDownloadDialog) {

@@ -3,11 +3,14 @@ package com.droidhost.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -16,7 +19,8 @@ fun DownloadBundleDialog(
     onDismiss: () -> Unit,
     onDownload: (String) -> Unit
 ) {
-    var urlText by remember { mutableStateOf("https://github.com/droidhost/releases/download/v0.1.0/vm-bundle.zip") }
+    var urlText by remember { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -35,7 +39,7 @@ fun DownloadBundleDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Enter the direct download URL for the ARM64 guest bundle zip (GitHub Releases, raw link, or private server):",
+                    "Paste a direct download URL for the ARM64 guest bundle zip (e.g. from GitHub Releases or your server):",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -43,24 +47,48 @@ fun DownloadBundleDialog(
                     value = urlText,
                     onValueChange = { urlText = it },
                     label = { Text("Bundle Archive URL") },
-                    placeholder = { Text("https://github.com/.../vm-bundle.zip") },
+                    placeholder = { Text("https://example.com/vm-bundle.zip") },
                     singleLine = true,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    trailingIcon = {
+                        if (urlText.isNotEmpty()) {
+                            IconButton(onClick = { urlText = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        } else {
+                            IconButton(onClick = {
+                                val clip = clipboardManager.getText()?.text?.trim()
+                                if (!clip.isNullOrEmpty()) {
+                                    urlText = clip
+                                }
+                            }) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste from clipboard")
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text(
-                    "Supports GitHub releases with automatic redirect handling and live download progress.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "💡 Tip: If you already have the .zip on your phone, you can use 'Import (.zip)' on the home screen without needing a URL.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (urlText.isNotBlank()) onDownload(urlText.trim())
+                    val trimmed = urlText.trim()
+                    if (trimmed.isNotBlank()) onDownload(trimmed)
                 },
-                enabled = urlText.isNotBlank()
+                enabled = urlText.trim().isNotBlank()
             ) {
                 Text("Download & Install")
             }
