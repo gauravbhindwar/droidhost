@@ -105,24 +105,38 @@ The Android build has been validated successfully with `:app:assembleDebug` and 
 - Do not ship guest disks, kernels, initrds, QEMU binaries, SDK output, or generated build files in Git.
 - Keep user port forwarding explicit and reject collisions.
 
-## Recommended Next Steps
+## Implemented Functionality & Current Status
 
-1. Produce and provision a real ARM64 guest bundle containing Linux, Docker Engine, vm-agent, QEMU, and the persistent ext4 disk.
-2. Implement Android-side runtime extraction and QEMU process supervision in `ServerModeService`.
-3. Add a settings screen for VM CPU, RAM, disk, token, auto-start, and port forwarding configuration.
-4. Add explicit VM start, stop, and restart actions to the ViewModel and dashboard.
-5. Implement the Containers, Terminal, Storage, and Network screens currently represented by dashboard navigation and Quick Actions.
-6. Add ARM64 guest integration tests covering boot, Docker readiness, authenticated agent access, terminal sessions, and port forwarding.
-7. Upgrade AGP and Compose dependencies when compatibility with the selected Android SDK is confirmed.
+### Android App
+- **Jetpack Compose Material 3 Control Panel:**
+  - **Dashboard:** Server online/offline status, uptime, CPU/RAM/Network metrics, ARM64 VM controls card, Docker Engine overview, quick actions, and active containers preview.
+  - **Containers:** Full container list, instant search, state filter (All, Running, Stopped), container inspect sheet with ports/mounts/safe env keys, real-time CPU/RAM/Network stats, scrollable logs viewer, and actions (start, stop, restart, delete).
+  - **Terminal:** Monospace Linux PTY shell connected over authenticated WebSocket (`/v1/terminal`) with virtual accessory buttons (`Ctrl+C`, `Ctrl+D`, `Tab`, `Esc`, arrow keys, command input).
+  - **Storage:** Visual breakdown of VM virtual disk, Docker writable layers, images, volumes, and Android internal storage.
+  - **Network:** QEMU network status, VM internal IP, network I/O stats, and user-configurable port forwarding (`127.0.0.1:<hostPort> -> <guestPort>`).
+  - **Settings:** Hardware allocation sliders (CPU cores, RAM MB, Disk GB) validated against physical Android device hardware, auto-start on boot toggle, and real-time guest VM bundle asset diagnostics.
+- **Graceful Offline & Error Handling:**
+  - When the VM is stopped/offline, polling is safely paused and raw socket exceptions (`Failed to connect to /127.0.0.1:8899`) are suppressed.
+  - VM boot failures and missing asset reports are displayed in a clean, user-friendly diagnostic banner.
+- **VM Process & Lifecycle Management:**
+  - `VmManager` validates guest bundle assets (`qemu-system-aarch64`, ARM64 Linux kernel `Image`, `initrd.img`, `droidhost.ext4`, and `agent-token`).
+  - `ServerModeService` manages foreground notification, VM execution, and handles start, stop, and restart requests.
 
-## Files to Start With
+### vm-agent
+- Authenticated HTTP API (`/health`, `/v1/metrics`, `/v1/containers`, `/v1/containers/{id}`, `/v1/images`, `/v1/volumes`, `/v1/networks`).
+- Real Linux PTY terminal bridge over WebSocket (`/v1/terminal`).
 
-- Android entry point: `app/src/main/java/com/droidhost/MainActivity.kt`
-- Android API repository: `app/src/main/java/com/droidhost/data/AgentRepository.kt`
-- Android state polling: `app/src/main/java/com/droidhost/ui/MainViewModel.kt`
-- VM domain and validation: `app/src/main/java/com/droidhost/domain/Models.kt`
-- Foreground service: `app/src/main/java/com/droidhost/service/ServerModeService.kt`
-- VM launch contract: `vm/run-vm.sh`
-- Guest asset validation: `vm/validate-assets.sh`
-- Go agent routes: `vm-agent/internal/api/server.go`
-- Docker client: `vm-agent/internal/dockerapi/`
+### Verification & Testing
+- Unit tests pass with Gradle: `:app:testDebugUnitTest` (configuration validation, VM lifecycle, container state mapping, port forwarding).
+- Go tests pass: `go test ./...` in `vm-agent`.
+- Debug APK successfully compiled and packaged: `:app:assembleDebug`.
+
+## Provisioning the ARM64 Guest Bundle
+To run live workloads on an actual physical Android device, copy or extract the following ARM64 assets into `/data/user/0/com.droidhost/files/vm/`:
+1. `bin/qemu-system-aarch64` (executable)
+2. `boot/Image` (ARM64 kernel with `ARMd` header magic)
+3. `boot/initrd.img` (initramfs with virtio drivers)
+4. `data/droidhost.ext4` (rootfs with Docker daemon and `vm-agent`)
+5. `agent-token` (managed automatically by DroidHost)
+
+The diagnostics tab in Settings will automatically confirm when all 5 assets are in place.

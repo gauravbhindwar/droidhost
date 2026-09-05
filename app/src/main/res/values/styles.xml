@@ -1,1 +1,10 @@
-<resources><style name="Theme.DroidHost" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">true</item><item name="android:statusBarColor">#F4F2EC</item><item name="android:navigationBarColor">#F4F2EC</item></style></resources>
+<resources>
+    <style name="Theme.DroidHost" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#0B1318</item>
+        <item name="android:navigationBarColor">#0B1318</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="android:windowSplashScreenBackground">#0B1318</item>
+    </style>
+</resources>
