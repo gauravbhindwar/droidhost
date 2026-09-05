@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.droidhost.domain.PortForwardRule
+import com.droidhost.domain.RemoteAccessMode
 import com.droidhost.domain.VmState
 
 @Composable
@@ -164,7 +165,8 @@ fun NetworkScreen(
                 PortRuleCard(
                     rule = rule,
                     onToggle = { viewModel.togglePortForwardRule(rule.id) },
-                    onDelete = { viewModel.removePortForwardRule(rule.id) }
+                    onDelete = { viewModel.removePortForwardRule(rule.id) },
+                    onOpenBrowser = { viewModel.openBrowser("http://127.0.0.1:${rule.hostPort}") }
                 )
             }
         }
@@ -190,18 +192,13 @@ private fun RemoteSshAccessCard(
     val context = LocalContext.current
     var showGuide by remember { mutableStateOf(false) }
     var showCloudflareEdit by remember { mutableStateOf(false) }
+    var showDomainEdit by remember { mutableStateOf(false) }
     var cfTokenInput by remember(state.cloudflareToken) { mutableStateOf(state.cloudflareToken) }
+    var cfDomainInput by remember(state.cloudflareDomain) { mutableStateOf(state.cloudflareDomain) }
     var cfTokenVisible by remember { mutableStateOf(false) }
 
     val sshIpCommand = "ssh root@${state.deviceLanIp} -p ${state.sshPort}"
     val sshMdnsCommand = "ssh root@${state.mdnsHostname} -p ${state.sshPort}"
-
-    val networkTypeLabel = when {
-        state.deviceLanIp.startsWith("100.") -> "Tailscale Mesh VPN (Fixed Static IP)"
-        state.deviceLanIp.startsWith("192.168.") || state.deviceLanIp.startsWith("10.") || state.deviceLanIp.startsWith("172.") -> "Wi-Fi LAN (DHCP Dynamic)"
-        state.deviceLanIp == "127.0.0.1" -> "Local Loopback"
-        else -> "Network Interface"
-    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -211,23 +208,32 @@ private fun RemoteSshAccessCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.Public, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Column {
                         Text(
-                            "SSH REMOTE ACCESS",
+                            "STATIC IP & REMOTE ACCESS",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            networkTypeLabel,
+                            when (state.remoteAccessMode) {
+                                RemoteAccessMode.TAILSCALE -> "Tailscale Mesh VPN (Fixed Static 100.x.y.z IP)"
+                                RemoteAccessMode.CLOUDFLARE -> "Cloudflare Tunnel (Public Custom Domain)"
+                                RemoteAccessMode.LOCAL_WIFI -> "Local Wi-Fi Network (LAN Only)"
+                            },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (state.deviceLanIp.startsWith("100.")) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = when (state.remoteAccessMode) {
+                                RemoteAccessMode.TAILSCALE -> Color(0xFF2A9D8F)
+                                RemoteAccessMode.CLOUDFLARE -> Color(0xFFF4A261)
+                                RemoteAccessMode.LOCAL_WIFI -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
                 }
@@ -236,437 +242,109 @@ private fun RemoteSshAccessCard(
                 }
             }
 
-            // Command 1: Direct IP
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+            // 3-Way Provider Selector with Mutual Exclusivity
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Direct IP SSH Command:",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(sshIpCommand))
-                            Toast.makeText(context, "Copied SSH command", Toast.LENGTH_SHORT).show()
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(12.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Copy", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                Text(
-                    text = sshIpCommand,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.primary
+                FilterChip(
+                    selected = state.remoteAccessMode == RemoteAccessMode.LOCAL_WIFI,
+                    onClick = { viewModel.setRemoteAccessMode(RemoteAccessMode.LOCAL_WIFI) },
+                    label = { Text("Local Wi-Fi", style = MaterialTheme.typography.labelSmall) },
+                    leadingIcon = { Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                    modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = state.remoteAccessMode == RemoteAccessMode.TAILSCALE,
+                    onClick = { viewModel.setRemoteAccessMode(RemoteAccessMode.TAILSCALE) },
+                    label = { Text("Tailscale ⭐", style = MaterialTheme.typography.labelSmall) },
+                    leadingIcon = { Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                    modifier = Modifier.weight(1.15f)
+                )
+                FilterChip(
+                    selected = state.remoteAccessMode == RemoteAccessMode.CLOUDFLARE,
+                    onClick = { viewModel.setRemoteAccessMode(RemoteAccessMode.CLOUDFLARE) },
+                    label = { Text("Cloudflare", style = MaterialTheme.typography.labelSmall) },
+                    leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                    modifier = Modifier.weight(1.05f)
                 )
             }
 
-            // Command 2: mDNS Hostname
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+            // Mutual Exclusivity Notice
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        "mDNS Hostname (No IP needed on Wi-Fi):",
+                        "Strict Policy: Only ONE remote provider is active at a time (Tailscale or Cloudflare) to prevent network and routing conflicts.",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(sshMdnsCommand))
-                            Toast.makeText(context, "Copied mDNS command", Toast.LENGTH_SHORT).show()
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(12.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Copy", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                Text(
-                    text = sshMdnsCommand,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
-
-            // ─── Tailscale / WireGuard Mesh VPN Card ───────────────────────
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            val isTailscaleActive = state.deviceLanIp.startsWith("100.")
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.VpnKey, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(20.dp))
-                        Column {
-                            Text(
-                                "TAILSCALE / MESH VPN",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                if (isTailscaleActive) "Connected — static 100.x.y.z IP active" else "Not connected — install Tailscale for fixed IP",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isTailscaleActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Surface(
-                        color = if (isTailscaleActive) Color(0xFF2A9D8F).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .background(if (isTailscaleActive) Color(0xFF2A9D8F) else Color.Gray, RoundedCornerShape(4.dp))
-                            )
-                            Text(
-                                if (isTailscaleActive) "ACTIVE" else "OFFLINE",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isTailscaleActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-
-                if (isTailscaleActive) {
-                    val tailscaleSsh = "ssh root@${state.deviceLanIp} -p ${state.sshPort}"
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Tailscale Static IP SSH Command:", style = MaterialTheme.typography.labelSmall)
-                            OutlinedButton(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(tailscaleSsh))
-                                    Toast.makeText(context, "Copied Tailscale SSH command", Toast.LENGTH_SHORT).show()
-                                },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                modifier = Modifier.height(26.dp)
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(11.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Copy", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                        Text(
-                            text = tailscaleSsh,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp,
-                            color = Color(0xFF2A9D8F)
-                        )
-                        Text(
-                            "MagicDNS Domain: ssh root@<phone-name>.tailnet.ts.net -p ${state.sshPort}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
-                                if (launchIntent != null) {
-                                    context.startActivity(launchIntent)
-                                } else {
-                                    try {
-                                        val playStore = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.tailscale.ipn"))
-                                        context.startActivity(playStore)
-                                    } catch (_: Exception) {
-                                        Toast.makeText(context, "Install Tailscale from Google Play", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Open Tailscale App", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                    Text(
-                        "Tailscale assigns your phone a permanent static 100.x.y.z IP and MagicDNS domain (*.tailnet.ts.net) that bypasses CGNAT anywhere worldwide without port forwarding.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                         fontSize = 11.sp
                     )
                 }
             }
 
-            // ─── Cloudflare Tunnel Card ────────────────────────────────────
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            HorizontalDivider()
 
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFFF4A261), modifier = Modifier.size(20.dp))
-                        Column {
-                            Text(
-                                "CLOUDFLARE TUNNEL",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                if (state.cloudflareToken.isNotEmpty()) "Configured — access from anywhere" else "Not configured — local network only",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (state.cloudflareToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+            // Dynamic Provider Display
+            when (state.remoteAccessMode) {
+                RemoteAccessMode.TAILSCALE -> {
+                    TailscaleProviderSection(
+                        state = state,
+                        clipboardManager = clipboardManager,
+                        context = context,
+                        onOpenTailscale = {
+                            val launchIntent = context.packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
+                            if (launchIntent != null) {
+                                context.startActivity(launchIntent)
+                            } else {
+                                try {
+                                    val playStore = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.tailscale.ipn"))
+                                    context.startActivity(playStore)
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "Install Tailscale from Google Play", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
-                    }
-                    TextButton(
-                        onClick = { showCloudflareEdit = !showCloudflareEdit },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(
-                            if (state.cloudflareToken.isNotEmpty()) Icons.Default.Edit else Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (state.cloudflareToken.isNotEmpty()) "Edit" else "Set Token",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
+                    )
                 }
-
-                if (showCloudflareEdit) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = cfTokenInput,
-                            onValueChange = { cfTokenInput = it },
-                            label = { Text("Cloudflare Tunnel Token") },
-                            placeholder = { Text("eyJhIjoiY...") },
-                            trailingIcon = {
-                                IconButton(onClick = { cfTokenVisible = !cfTokenVisible }) {
-                                    Icon(
-                                        if (cfTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            },
-                            visualTransformation = if (cfTokenVisible)
-                                androidx.compose.ui.text.input.VisualTransformation.None
-                            else
-                                androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            singleLine = true,
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    viewModel.saveCloudflareToken(cfTokenInput)
-                                    showCloudflareEdit = false
-                                    Toast.makeText(context, "Token saved on device", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Save", style = MaterialTheme.typography.labelMedium)
-                            }
-                            if (state.cloudflareToken.isNotEmpty()) {
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.clearCloudflareToken()
-                                        cfTokenInput = ""
-                                        showCloudflareEdit = false
-                                    }
-                                ) {
-                                    Text("Clear", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        }
-                    }
+                RemoteAccessMode.CLOUDFLARE -> {
+                    CloudflareProviderSection(
+                        state = state,
+                        viewModel = viewModel,
+                        clipboardManager = clipboardManager,
+                        context = context,
+                        showEdit = showCloudflareEdit,
+                        onToggleEdit = { showCloudflareEdit = !showCloudflareEdit },
+                        tokenInput = cfTokenInput,
+                        onTokenChange = { cfTokenInput = it },
+                        tokenVisible = cfTokenVisible,
+                        onToggleTokenVisible = { cfTokenVisible = !cfTokenVisible },
+                        showDomainEdit = showDomainEdit,
+                        onToggleDomainEdit = { showDomainEdit = !showDomainEdit },
+                        domainInput = cfDomainInput,
+                        onDomainChange = { cfDomainInput = it }
+                    )
                 }
-
-                // Cloudflare 1-Tap Tunnel Automation (shown when token is set)
-                if (state.cloudflareToken.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        // Tunnel Status indicator
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "Tunnel Status",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Surface(
-                                color = if (state.cloudflareTunnelActive) Color(0xFF2A9D8F).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .background(
-                                                if (state.cloudflareTunnelActive) Color(0xFF2A9D8F) else Color.Gray,
-                                                RoundedCornerShape(4.dp)
-                                            )
-                                    )
-                                    Text(
-                                        if (state.cloudflareTunnelActive) "ONLINE & ACTIVE" else "INACTIVE / READY",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (state.cloudflareTunnelActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-
-                        // 1-Tap Action Button
-                        val vmRunning = state.vmState == VmState.RUNNING
-                        if (state.cloudflareTunnelActive) {
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.stopCloudflareTunnel()
-                                    Toast.makeText(context, "Cloudflare Tunnel stopped", Toast.LENGTH_SHORT).show()
-                                },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Stop Cloudflare Tunnel")
-                            }
-                        } else {
-                            Button(
-                                onClick = {
-                                    if (vmRunning) {
-                                        viewModel.startCloudflareTunnel()
-                                        Toast.makeText(context, "Starting Cloudflare Tunnel inside VM...", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "Start the Linux VM first", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                enabled = vmRunning,
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF4A261)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.CloudQueue, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    if (vmRunning) "Start Cloudflare Tunnel" else "Start VM First to Launch Tunnel",
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.Black
-                                )
-                            }
-                        }
-
-                        // Auto-start switch
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    "Auto-start on VM boot",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    "Automatically launch tunnel when VM starts",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            }
-                            Switch(
-                                checked = state.autoStartCloudflareTunnel,
-                                onCheckedChange = { viewModel.setAutoStartCloudflareTunnel(it) }
-                            )
-                        }
-
-                        Text(
-                            "Runs automatically in background inside the Linux VM. No manual terminal typing required.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp
-                        )
-                    }
+                RemoteAccessMode.LOCAL_WIFI -> {
+                    LocalWifiProviderSection(
+                        state = state,
+                        clipboardManager = clipboardManager,
+                        context = context,
+                        sshIpCommand = sshIpCommand,
+                        sshMdnsCommand = sshMdnsCommand
+                    )
                 }
             }
 
-            // ─── Local-Only Security Badge ─────────────────────────────────
+            // Local-Only Security Badge
             Surface(
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
                 shape = RoundedCornerShape(8.dp),
@@ -679,7 +357,7 @@ private fun RemoteSshAccessCard(
                 ) {
                     Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        "All credentials, tokens & keys are stored exclusively on this device. Nothing is ever uploaded to any server or cloud.",
+                        "Zero Cloud Dependency: All tokens, keys & tunnel credentials remain strictly on this device in private storage.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         fontSize = 11.sp
@@ -687,7 +365,7 @@ private fun RemoteSshAccessCard(
                 }
             }
 
-            // ─── Expandable Dynamic IP Guide ───────────────────────────────
+            // Expandable Dynamic IP Guide
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
@@ -704,7 +382,7 @@ private fun RemoteSshAccessCard(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                             Text(
-                                "Phone IP keeps changing? How to fix it",
+                                "How Static IP & Remote Access Works",
                                 fontWeight = FontWeight.Bold,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary
@@ -723,52 +401,39 @@ private fun RemoteSshAccessCard(
                         Spacer(Modifier.height(8.dp))
 
                         Text(
-                            "1. Tailscale / WireGuard (Recommended ⭐)",
+                            "1. Tailscale / WireGuard Mesh VPN (Recommended ⭐)",
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "Install Tailscale on this phone and your PC. DroidHost automatically binds to the permanent Tailscale IP (100.x.y.z) and MagicDNS name. It NEVER changes and works from anywhere across Wi-Fi or 4G/5G without port forwarding.",
+                            "Assigns a fixed static 100.x.y.z IP and MagicDNS domain that never changes across cellular networks or changing Wi-Fi. Bypasses CGNAT without opening router ports.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "2. Cloudflare Tunnel (Set above ↑)",
+                            "2. Cloudflare Tunnel (Public Custom Domain)",
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "Add your Cloudflare tunnel token above and run 'cloudflared' inside the VM. Get a permanent public domain for SSH and web access from any device, anywhere in the world.",
+                            "Creates an encrypted outbound tunnel connecting your phone's self-hosted apps to a public domain (e.g. nothing3aproserver.animastuff.fun) without opening firewall ports.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "3. mDNS Hostname (droidhost.local)",
+                            "3. Local Wi-Fi & mDNS (Zero-Configuration Home Network)",
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "On the same local Wi-Fi, use 'ssh root@droidhost.local -p 2222'. ZeroConf mDNS resolves the phone automatically even when DHCP changes the IP.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "4. Router DHCP Reservation",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "Open your router (192.168.1.1) ➔ DHCP ➔ Address Reservation. Bind your phone's Wi-Fi MAC address to a fixed IP (e.g. 192.168.1.50).",
+                            "Connect on your local network using 'ssh root@droidhost.local -p 2222' or direct phone IP. Ideal when you only need to access your server from home.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -779,14 +444,563 @@ private fun RemoteSshAccessCard(
     }
 }
 
+@Composable
+private fun TailscaleProviderSection(
+    state: DashboardState,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    context: android.content.Context,
+    onOpenTailscale: () -> Unit
+) {
+    val isTailscaleActive = state.deviceLanIp.startsWith("100.")
+    val tailscaleSsh = "ssh root@${state.deviceLanIp} -p ${state.sshPort}"
 
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.VpnKey, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(20.dp))
+                Column {
+                    Text("TAILSCALE MESH VPN", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (isTailscaleActive) "Connected — static 100.x.y.z IP active" else "Ready — connect Tailscale for fixed IP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isTailscaleActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Surface(
+                color = if (isTailscaleActive) Color(0xFF2A9D8F).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(if (isTailscaleActive) Color(0xFF2A9D8F) else Color.Gray, RoundedCornerShape(4.dp))
+                    )
+                    Text(
+                        if (isTailscaleActive) "ACTIVE" else "OFFLINE",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isTailscaleActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
 
+        // Tailscale SSH command
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Tailscale Static IP SSH Command:", style = MaterialTheme.typography.labelSmall)
+                OutlinedButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(tailscaleSsh))
+                        Toast.makeText(context, "Copied Tailscale SSH command", Toast.LENGTH_SHORT).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(11.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Text(
+                text = tailscaleSsh,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                color = Color(0xFF2A9D8F)
+            )
+            Text(
+                "MagicDNS Domain: ssh root@<phone-name>.tailnet.ts.net -p ${state.sshPort}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        OutlinedButton(
+            onClick = onOpenTailscale,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Open Tailscale App", style = MaterialTheme.typography.labelMedium)
+        }
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "Notice: Cloudflare Tunnel is deactivated while Tailscale Mesh VPN is selected.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CloudflareProviderSection(
+    state: DashboardState,
+    viewModel: MainViewModel,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    context: android.content.Context,
+    showEdit: Boolean,
+    onToggleEdit: () -> Unit,
+    tokenInput: String,
+    onTokenChange: (String) -> Unit,
+    tokenVisible: Boolean,
+    onToggleTokenVisible: () -> Unit,
+    showDomainEdit: Boolean,
+    onToggleDomainEdit: () -> Unit,
+    domainInput: String,
+    onDomainChange: (String) -> Unit
+) {
+    val vmRunning = state.vmState == VmState.RUNNING
+    val publicUrl = "https://${state.cloudflareDomain}"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Status row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFFF4A261), modifier = Modifier.size(20.dp))
+                Column {
+                    Text("CLOUDFLARE TUNNEL", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (state.cloudflareTunnelActive) "Connected & routing public traffic" else "Configured — ready to start",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state.cloudflareTunnelActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Surface(
+                color = if (state.cloudflareTunnelActive) Color(0xFF2A9D8F).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(
+                                if (state.cloudflareTunnelActive) Color(0xFF2A9D8F) else Color.Gray,
+                                RoundedCornerShape(4.dp)
+                            )
+                    )
+                    Text(
+                        if (state.cloudflareTunnelActive) "ONLINE" else "INACTIVE",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (state.cloudflareTunnelActive) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Public Domain Card with 1-Tap Browser Open & Copy
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Public Tunnel Domain:", style = MaterialTheme.typography.labelSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = onToggleDomainEdit,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text("Edit", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(publicUrl))
+                            Toast.makeText(context, "Copied domain", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(11.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copy", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+
+            if (showDomainEdit) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = domainInput,
+                        onValueChange = onDomainChange,
+                        label = { Text("Domain") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.saveCloudflareDomain(domainInput)
+                            onToggleDomainEdit()
+                            Toast.makeText(context, "Domain saved", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("Save")
+                    }
+                }
+            } else {
+                Text(
+                    text = publicUrl,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = Color(0xFFF4A261)
+                )
+            }
+
+            Button(
+                onClick = { viewModel.openBrowser(publicUrl) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Open Domain in Chrome", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // Start / Stop Tunnel Button
+        if (state.cloudflareTunnelActive) {
+            OutlinedButton(
+                onClick = {
+                    viewModel.stopCloudflareTunnel()
+                    Toast.makeText(context, "Cloudflare Tunnel stopped", Toast.LENGTH_SHORT).show()
+                },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Stop Cloudflare Tunnel")
+            }
+        } else {
+            Button(
+                onClick = {
+                    if (vmRunning) {
+                        viewModel.startCloudflareTunnel()
+                        Toast.makeText(context, "Starting Cloudflare Tunnel inside VM...", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Start the Linux VM first", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                enabled = vmRunning && state.cloudflareToken.isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF4A261)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.CloudQueue, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (!vmRunning) "Start VM First to Launch Tunnel"
+                    else if (state.cloudflareToken.isEmpty()) "Set Token Below to Launch"
+                    else "Start Cloudflare Tunnel",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black
+                )
+            }
+        }
+
+        // Auto-start switch
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Auto-start on VM boot", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                Text(
+                    "Automatically launch tunnel when VM boots",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
+            }
+            Switch(
+                checked = state.autoStartCloudflareTunnel,
+                onCheckedChange = { viewModel.setAutoStartCloudflareTunnel(it) }
+            )
+        }
+
+        // Token Configuration Section
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (state.cloudflareToken.isNotEmpty()) "Tunnel Token Configured" else "No Tunnel Token Set",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (state.cloudflareToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error
+            )
+            TextButton(
+                onClick = onToggleEdit,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Icon(if (state.cloudflareToken.isNotEmpty()) Icons.Default.Edit else Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(if (state.cloudflareToken.isNotEmpty()) "Edit Token" else "Set Token", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        if (showEdit) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = onTokenChange,
+                    label = { Text("Cloudflare Tunnel Token") },
+                    placeholder = { Text("eyJhIjoiY...") },
+                    trailingIcon = {
+                        IconButton(onClick = onToggleTokenVisible) {
+                            Icon(
+                                if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    },
+                    visualTransformation = if (tokenVisible)
+                        androidx.compose.ui.text.input.VisualTransformation.None
+                    else
+                        androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            viewModel.saveCloudflareToken(tokenInput)
+                            onToggleEdit()
+                            Toast.makeText(context, "Token saved on device", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save Token", style = MaterialTheme.typography.labelMedium)
+                    }
+                    if (state.cloudflareToken.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.clearCloudflareToken()
+                                onTokenChange("")
+                                onToggleEdit()
+                            }
+                        ) {
+                            Text("Clear", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "Notice: Tailscale routing is paused while Cloudflare Tunnel is selected.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalWifiProviderSection(
+    state: DashboardState,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    context: android.content.Context,
+    sshIpCommand: String,
+    sshMdnsCommand: String
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Wifi, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Column {
+                    Text("LOCAL WI-FI (LAN ONLY)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Direct IP & mDNS — no internet routing",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            AssistChip(
+                onClick = {},
+                label = { Text("Local", style = MaterialTheme.typography.labelSmall) }
+            )
+        }
+
+        // Direct IP
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Direct IP SSH Command:", style = MaterialTheme.typography.labelSmall)
+                OutlinedButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(sshIpCommand))
+                        Toast.makeText(context, "Copied SSH command", Toast.LENGTH_SHORT).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(11.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Text(
+                text = sshIpCommand,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        // mDNS Hostname
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("mDNS Hostname (No IP needed on Wi-Fi):", style = MaterialTheme.typography.labelSmall)
+                OutlinedButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(sshMdnsCommand))
+                        Toast.makeText(context, "Copied mDNS command", Toast.LENGTH_SHORT).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(11.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Text(
+                text = sshMdnsCommand,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.secondary
+            )
+        }
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                "Notice: Select Tailscale or Cloudflare above to enable static IP access over the public internet.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+    }
+}
 
 @Composable
 private fun PortRuleCard(
     rule: PortForwardRule,
     onToggle: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onOpenBrowser: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -797,11 +1011,24 @@ private fun PortRuleCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    "http://127.0.0.1:${rule.hostPort}",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "http://127.0.0.1:${rule.hostPort}",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    IconButton(
+                        onClick = onOpenBrowser,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.OpenInBrowser,
+                            contentDescription = "Open in browser",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 Text(
                     "Forwards to guest port ${rule.guestPort} (${rule.protocol.uppercase()})",
                     style = MaterialTheme.typography.bodySmall,

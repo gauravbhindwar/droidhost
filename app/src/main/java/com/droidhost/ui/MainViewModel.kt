@@ -60,7 +60,9 @@ data class DashboardState(
     val deviceLanIp: String = "127.0.0.1",
     val sshPort: Int = 2222,
     val mdnsHostname: String = "droidhost.local",
-    // Cloudflare Tunnel (token stored on-device only in SharedPreferences)
+    // Remote Access Provider (Strict Mutual Exclusivity: only one active at a time)
+    val remoteAccessMode: RemoteAccessMode = RemoteAccessMode.LOCAL_WIFI,
+    val cloudflareDomain: String = "nothing3aproserver.animastuff.fun",
     val cloudflareToken: String = "",
     val cloudflareTunnelActive: Boolean = false,
     val autoStartCloudflareTunnel: Boolean = false,
@@ -192,6 +194,9 @@ class MainViewModel(
         // Cloudflare token is stored ONLY on device, never in any cloud service
         val cfToken = prefs.getString("cloudflare_tunnel_token", "") ?: ""
         val autoStartTunnel = prefs.getBoolean("auto_start_cf_tunnel", false)
+        val modeStr = prefs.getString("remote_access_mode", RemoteAccessMode.LOCAL_WIFI.name) ?: RemoteAccessMode.LOCAL_WIFI.name
+        val accessMode = try { RemoteAccessMode.valueOf(modeStr) } catch (_: Exception) { RemoteAccessMode.LOCAL_WIFI }
+        val cfDomain = prefs.getString("cloudflare_domain", "nothing3aproserver.animastuff.fun") ?: "nothing3aproserver.animastuff.fun"
 
         val resources = _state.value.deviceResources
         val maxDisk = (resources.availableStorageGb - 2).coerceAtLeast(4)
@@ -207,8 +212,72 @@ class MainViewModel(
             vmConfig = clampedConfig,
             configValidation = validation,
             cloudflareToken = cfToken,
-            autoStartCloudflareTunnel = autoStartTunnel
+            autoStartCloudflareTunnel = autoStartTunnel,
+            remoteAccessMode = accessMode,
+            cloudflareDomain = cfDomain
         )
+    }
+
+    fun setRemoteAccessMode(mode: RemoteAccessMode) {
+        if (context != null) {
+            context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+                .edit()
+                .putString("remote_access_mode", mode.name)
+                .apply()
+        }
+
+        when (mode) {
+            RemoteAccessMode.TAILSCALE -> {
+                // Strict Mutual Exclusivity: Stop Cloudflare Tunnel if active
+                if (_state.value.cloudflareTunnelActive) {
+                    stopCloudflareTunnel()
+                }
+                _state.value = _state.value.copy(remoteAccessMode = RemoteAccessMode.TAILSCALE)
+                updateDeviceLanIp()
+            }
+            RemoteAccessMode.CLOUDFLARE -> {
+                _state.value = _state.value.copy(remoteAccessMode = RemoteAccessMode.CLOUDFLARE)
+                // Strict Mutual Exclusivity: Start Cloudflare Tunnel if VM running & token set
+                if (_state.value.vmState == VmState.RUNNING &&
+                    _state.value.cloudflareToken.isNotEmpty() &&
+                    !_state.value.cloudflareTunnelActive
+                ) {
+                    startCloudflareTunnel()
+                }
+            }
+            RemoteAccessMode.LOCAL_WIFI -> {
+                // Strict Mutual Exclusivity: Stop Cloudflare Tunnel if active
+                if (_state.value.cloudflareTunnelActive) {
+                    stopCloudflareTunnel()
+                }
+                _state.value = _state.value.copy(remoteAccessMode = RemoteAccessMode.LOCAL_WIFI)
+                updateDeviceLanIp()
+            }
+        }
+    }
+
+    fun saveCloudflareDomain(domain: String) {
+        val cleanDomain = domain.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+        if (context != null) {
+            context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+                .edit()
+                .putString("cloudflare_domain", cleanDomain)
+                .apply()
+        }
+        _state.value = _state.value.copy(cloudflareDomain = cleanDomain)
+    }
+
+    fun openBrowser(url: String) {
+        val fullUrl = if (!url.startsWith("http://") && !url.startsWith("https://")) "http://$url" else url
+        context?.let { ctx ->
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(fullUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(intent)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     fun saveCloudflareToken(token: String) {
@@ -250,7 +319,14 @@ class MainViewModel(
         if (token.isEmpty()) return
         terminalConnect()
         terminalSend("cloudflared tunnel run --token $token &\n")
-        _state.value = _state.value.copy(cloudflareTunnelActive = true)
+        _state.value = _state.value.copy(
+            cloudflareTunnelActive = true,
+            remoteAccessMode = RemoteAccessMode.CLOUDFLARE
+        )
+        context?.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString("remote_access_mode", RemoteAccessMode.CLOUDFLARE.name)
+            ?.apply()
     }
 
     fun stopCloudflareTunnel() {
@@ -287,7 +363,8 @@ class MainViewModel(
                     )
                 } else {
                     refresh()
-                    if (_state.value.autoStartCloudflareTunnel &&
+                    if (_state.value.remoteAccessMode == RemoteAccessMode.CLOUDFLARE &&
+                        _state.value.autoStartCloudflareTunnel &&
                         _state.value.cloudflareToken.isNotEmpty() &&
                         !_state.value.cloudflareTunnelActive
                     ) {

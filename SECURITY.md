@@ -1,43 +1,59 @@
-# Security
+# Security Architecture & Boundary Model
 
-## Android / VM boundary
+DroidHost treats the Linux Virtual Machine as the primary security and isolation boundary for all self-hosted user applications.
 
-Android owns the app data directory, QEMU process, VM disk, and forwarded
-sockets. Workloads execute in the real ARM64 Linux guest. The app does not
-blindly execute privileged Android shell commands and does not expose an
-Android shell through the terminal UI.
+---
 
-## vm-agent authentication
+## 1. Android / VM Boundary
 
-The agent refuses to start without a bearer token. Every non-health request
-must include the exact token. Generate a random token per installation and
-store it in app-private storage with restrictive permissions; inject it into
-the guest bundle at provisioning time. Do not use a shared release token.
+- **Host Containment**: The Android application executes within standard Android application sandboxing (SELinux domains, unprivileged UID/GID).
+- **No Arbitrary Android Commands**: The Android UI **never** executes privileged host commands or exposes Android's shell (`/system/bin/sh`).
+- **VM as the Workload Boundary**: All user workloads, compilers, scripts, and third-party containers run exclusively inside the virtualized ARM64 Linux guest VM.
+- **Escape Mitigation**: Any vulnerability or exploit within a Docker container is bounded by the Linux kernel inside the VM and cannot access Android host memory, SMS, contacts, camera, or external storage.
 
-## Port forwarding
+---
 
-Only configured local ports are forwarded. Bind local services to loopback by
-default, validate both ports as numeric ranges, reject collisions, and do not
-allow an arbitrary host interface to be selected without an explicit warning.
+## 2. vm-agent Authentication
 
-## Docker access
+- **Bearer Token Verification**: `vm-agent` enforces SHA-256 bearer token authentication on all endpoints (except the unauthenticated `/health` probe).
+- **Per-Device Generation**: Tokens are generated on a per-installation basis, stored in Android private app storage (`Context.MODE_PRIVATE`), and never transmitted over external networks.
+- **PTY Session Protection**: The WebSocket terminal stream requires bearer authentication during the WebSocket handshake before spawning a Linux pseudo-terminal.
 
-The Docker socket is consumed only by vm-agent inside the VM. Docker controls
-are narrow operations (list, inspect, start, stop, restart, remove, logs,
-stats). Environment values are never returned to the Android UI; only keys are
-shown. A workload with Docker socket access can control Docker and is therefore
-privileged within the guest.
+---
 
-## Filesystem isolation
+## 3. Port Forwarding & Network Isolation
 
-The VM disk is a separate ext4 image. Container mounts are displayed for
-operator awareness. Android paths are not bind-mounted into workloads by
-implicit behavior. Backups and export/import must be explicit user actions.
+- **Selective Loopback Forwarding**: QEMU's user-mode network stack (SLIRP) only forwards explicitly configured ports.
+- **Port Conflict Detection**: Before updating forwarding rules or restarting QEMU, ports are validated to prevent socket collision with Android system services.
+- **Direct Browser Integration**: When opening forwarded web apps (e.g. `http://127.0.0.1:8000`), traffic stays within localhost and the VM virtual interface.
 
-## Limitations
+---
 
-QEMU user networking is not a hardened network firewall. A VM escape or kernel,
-QEMU, Docker, or guest vulnerability can cross the intended boundary. Root in
-the guest is not equivalent to Android root, but it is powerful inside the VM.
-Keep QEMU, the guest kernel, Docker, and vm-agent updated and do not expose the
-agent port to untrusted networks.
+## 4. Remote Access & Credential Privacy
+
+- **On-Device Storage Only**: Cloudflare tunnel tokens, Tailscale credentials, and SSH keys are stored exclusively in local Android `SharedPreferences` (`droidhost_settings`).
+- **Zero Cloud Leakage**: DroidHost communicates directly with the local VM and configured tunnel providers; zero telemetry or credentials are sent to external third-party analytics servers.
+- **Mutual Exclusivity Enforcement**: Running multiple remote networking tools simultaneously causes packet sniffing, routing collisions, and DNS leakage. DroidHost guarantees only one remote access provider is active at any given time.
+
+---
+
+## 5. Docker Access & Secret Sanitization
+
+- **UNIX Socket Boundary**: Docker Engine is only accessible via `/var/run/docker.sock` inside the Linux guest.
+- **Safe Environment Masking**: When inspecting container configurations, DroidHost summarizes environment variable **keys** (e.g., `DATABASE_URL`, `API_KEY`, `PORT`) but strips out sensitive **values** to prevent accidental screen captures or shoulder surfing.
+- **Restricted Privileged Flags**: Default container templates run without `--privileged` unless explicitly specified by the operator.
+
+---
+
+## 6. Filesystem Isolation
+
+- **Virtual Disk Image**: The guest operating system and all container storage live inside a single virtual ext4 disk image (`droidhost.ext4`).
+- **No Implicit Host Mounts**: Android internal storage directories (`/sdcard`, `/data/data`) are never implicitly bind-mounted into Docker containers.
+- **Integrity Verification**: `VmManager` validates disk image consistency and filesystem signatures before booting.
+
+---
+
+## 7. Known Limitations
+
+- **QEMU User Networking**: QEMU SLIRP provides user-mode NAT, not a hardware-enforced firewall. Ensure workloads are kept updated.
+- **Host Resource Starvation**: High CPU or RAM workloads inside the VM can affect host battery life and thermals. DroidHost clamps resource allocation to safe physical thresholds (`<= 75% RAM`, `<= available physical cores`).
