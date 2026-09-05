@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/creack/pty"
@@ -29,8 +30,25 @@ func (s *Server) Handler(ctx context.Context, w http.ResponseWriter, r *http.Req
 		return err
 	}
 	defer conn.Close()
-	cmd := exec.CommandContext(ctx, s.shell, "-i")
-	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
+	var cmd *exec.Cmd
+	if strings.HasSuffix(s.shell, ".sh") {
+		cmd = exec.CommandContext(ctx, "/system/bin/sh", s.shell, "-i")
+	} else {
+		parts := strings.Fields(s.shell)
+		if len(parts) > 1 {
+			cmd = exec.CommandContext(ctx, parts[0], append(parts[1:], "-i")...)
+		} else {
+			cmd = exec.CommandContext(ctx, s.shell, "-i")
+		}
+	}
+	cmd.Env = append(cmd.Environ(),
+		"TERM=xterm-256color",
+		"HOME=/root",
+		"USER=root",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/system/bin",
+		"BASH_ENV=/etc/bash/bashrc",
+		"ENV=/etc/bash/bashrc",
+	)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return err

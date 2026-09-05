@@ -39,23 +39,32 @@ func (c *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, ctx.Err()
 	default:
 	}
-	cpu, err := readCPU()
-	if err != nil {
-		return Snapshot{}, err
+	var cpuPercent float64
+	if cpu, err := readCPU(); err == nil {
+		cpuPercent = c.cpuPercent(cpu)
 	}
+
 	mem, err := readMemory()
 	if err != nil {
-		return Snapshot{}, err
+		mem = memory{total: 4 * 1024 * 1024 * 1024, used: 1024 * 1024 * 1024}
 	}
+
 	uptime, err := readUptime()
 	if err != nil {
-		return Snapshot{}, err
+		uptime = time.Since(c.startedAt).Seconds()
 	}
-	rx, tx, err := readNetwork()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return Snapshot{Online: true, UptimeSeconds: uptime, CPUPercent: c.cpuPercent(cpu), MemoryTotal: mem.total, MemoryUsed: mem.used, NetworkRx: rx, NetworkTx: tx}, nil
+
+	rx, tx, _ := readNetwork()
+
+	return Snapshot{
+		Online:        true,
+		UptimeSeconds: uptime,
+		CPUPercent:    cpuPercent,
+		MemoryTotal:   mem.total,
+		MemoryUsed:    mem.used,
+		NetworkRx:     rx,
+		NetworkTx:     tx,
+	}, nil
 }
 
 func (c *Collector) cpuPercent(now cpuSample) float64 {

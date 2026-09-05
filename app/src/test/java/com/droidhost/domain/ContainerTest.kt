@@ -48,4 +48,43 @@ class ContainerTest {
         assertEquals(2, detail.envKeys.size)
         assertTrue(detail.envKeys.contains("PORT"))
     }
+
+    @Test
+    fun testCatalogueHasPanelsAndWebWorkloads() {
+        val items = CatalogueRepository.items
+        assertTrue("Catalogue must not be empty", items.isNotEmpty())
+
+        // Dokploy & Coolify must be present as PaaS panels
+        val dokploy = items.find { it.id == "dokploy" }
+        assertNotNull(dokploy)
+        assertTrue(dokploy!!.isPanel)
+        assertEquals(3000, dokploy.port)
+
+        val coolify = items.find { it.id == "coolify" }
+        assertNotNull(coolify)
+        assertTrue(coolify!!.isPanel)
+        assertEquals(8000, coolify.port)
+
+        val portainer = items.find { it.id == "portainer" }
+        assertNotNull(portainer)
+        assertTrue(portainer!!.isPanel)
+
+        // Web, Databases & Monitoring
+        assertNotNull(items.find { it.id == "wordpress" })
+        assertNotNull(items.find { it.id == "nginx" })
+        assertNotNull(items.find { it.id == "postgres" })
+        assertNotNull(items.find { it.id == "redis" })
+        assertNotNull(items.find { it.id == "uptime-kuma" })
+        assertNotNull(items.find { it.id == "cloudflared" })
+    }
+
+    @Test
+    fun testCatalogueCategoriesCoverage() {
+        val categories = CatalogueRepository.items.map { it.category }.toSet()
+        assertTrue(categories.contains(CatalogueCategory.PANELS))
+        assertTrue(categories.contains(CatalogueCategory.WEB))
+        assertTrue(categories.contains(CatalogueCategory.DATABASE))
+        assertTrue(categories.contains(CatalogueCategory.MONITORING))
+        assertTrue(categories.contains(CatalogueCategory.GIT_COMPOSE))
+    }
 }

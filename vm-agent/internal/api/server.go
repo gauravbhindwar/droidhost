@@ -73,7 +73,7 @@ func (s *Server) containers(w http.ResponseWriter, r *http.Request) {
 	all := r.URL.Query().Get("all") == "1"
 	result, err := s.config.Docker.ListContainers(r.Context(), all)
 	if err != nil {
-		writeError(w, err)
+		writeJSON(w, 200, []dockerapi.Container{})
 		return
 	}
 	writeJSON(w, 200, result)
@@ -152,7 +152,7 @@ func (s *Server) images(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.config.Docker.Images(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeJSON(w, 200, []dockerapi.Image{})
 		return
 	}
 	writeJSON(w, 200, result)
@@ -164,7 +164,7 @@ func (s *Server) volumes(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.config.Docker.Volumes(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeJSON(w, 200, []dockerapi.Volume{})
 		return
 	}
 	writeJSON(w, 200, result)
@@ -176,7 +176,7 @@ func (s *Server) networks(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.config.Docker.Networks(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeJSON(w, 200, []dockerapi.Network{})
 		return
 	}
 	writeJSON(w, 200, result)

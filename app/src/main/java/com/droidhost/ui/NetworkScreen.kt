@@ -271,24 +271,18 @@ private fun RemoteSshAccessCard(
             }
 
             // Mutual Exclusivity Notice
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                    Text(
-                        "Strict Policy: Only ONE remote provider is active at a time (Tailscale or Cloudflare) to prevent network and routing conflicts.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontSize = 11.sp
-                    )
-                }
+                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                Text(
+                    "Strict Policy: Only one remote provider active at a time (Tailscale or Cloudflare).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
             }
 
             HorizontalDivider()
@@ -340,27 +334,6 @@ private fun RemoteSshAccessCard(
                         context = context,
                         sshIpCommand = sshIpCommand,
                         sshMdnsCommand = sshMdnsCommand
-                    )
-                }
-            }
-
-            // Local-Only Security Badge
-            Surface(
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    Modifier.padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                    Text(
-                        "Zero Cloud Dependency: All tokens, keys & tunnel credentials remain strictly on this device in private storage.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 11.sp
                     )
                 }
             }

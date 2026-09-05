@@ -31,6 +31,7 @@ import com.droidhost.ui.*
 
 enum class ScreenTab {
     HOME,
+    CATALOGUE,
     CONTAINERS,
     TERMINAL,
     STORAGE,
@@ -165,6 +166,7 @@ fun DroidHostApp(agentToken: String) {
                                     Column {
                                         val title = when (currentTab) {
                                             ScreenTab.HOME -> "DROIDHOST"
+                                            ScreenTab.CATALOGUE -> "MARKETPLACE"
                                             ScreenTab.CONTAINERS -> "CONTAINERS"
                                             ScreenTab.TERMINAL -> "TERMINAL"
                                             ScreenTab.STORAGE -> "STORAGE"
@@ -179,13 +181,16 @@ fun DroidHostApp(agentToken: String) {
                                 }
                             },
                             navigationIcon = {
-                                if (currentTab == ScreenTab.STORAGE || currentTab == ScreenTab.NETWORK) {
+                                if (currentTab == ScreenTab.STORAGE || currentTab == ScreenTab.NETWORK || currentTab == ScreenTab.CATALOGUE) {
                                     IconButton(onClick = { currentTab = ScreenTab.HOME }) {
                                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                                     }
                                 }
                             },
                             actions = {
+                                IconButton(onClick = { vm.setShowGlobalSearchDialog(true) }) {
+                                    Icon(Icons.Default.Search, contentDescription = "Global Search")
+                                }
                                 IconButton(onClick = { vm.refresh() }) {
                                     Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                                 }
@@ -201,6 +206,12 @@ fun DroidHostApp(agentToken: String) {
                                 onClick = { currentTab = ScreenTab.HOME },
                                 icon = { Icon(Icons.Default.Dashboard, contentDescription = "Dashboard") },
                                 label = { Text("Home") }
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == ScreenTab.CATALOGUE,
+                                onClick = { currentTab = ScreenTab.CATALOGUE },
+                                icon = { Icon(Icons.Default.Storefront, contentDescription = "Marketplace") },
+                                label = { Text("Market", maxLines = 1) }
                             )
                             NavigationBarItem(
                                 selected = currentTab == ScreenTab.CONTAINERS,
@@ -233,7 +244,13 @@ fun DroidHostApp(agentToken: String) {
                             onNavigateToTerminal = { currentTab = ScreenTab.TERMINAL },
                             onNavigateToStorage = { currentTab = ScreenTab.STORAGE },
                             onNavigateToNetwork = { currentTab = ScreenTab.NETWORK },
-                            onNavigateToSettings = { currentTab = ScreenTab.SETTINGS }
+                            onNavigateToSettings = { currentTab = ScreenTab.SETTINGS },
+                            onNavigateToCatalogue = { currentTab = ScreenTab.CATALOGUE }
+                        )
+                        ScreenTab.CATALOGUE -> CatalogueScreen(
+                            state = state,
+                            viewModel = vm,
+                            onOpenTerminal = { currentTab = ScreenTab.TERMINAL }
                         )
                         ScreenTab.CONTAINERS -> ContainersScreen(
                             state = state,
@@ -257,6 +274,20 @@ fun DroidHostApp(agentToken: String) {
                             viewModel = vm
                         )
                     }
+                }
+
+                if (state.showGlobalSearchDialog) {
+                    GlobalSearchDialog(
+                        state = state,
+                        viewModel = vm,
+                        onNavigateToContainers = { currentTab = ScreenTab.CONTAINERS },
+                        onNavigateToTerminal = { currentTab = ScreenTab.TERMINAL },
+                        onNavigateToNetwork = { currentTab = ScreenTab.NETWORK },
+                        onNavigateToStorage = { currentTab = ScreenTab.STORAGE },
+                        onNavigateToSettings = { currentTab = ScreenTab.SETTINGS },
+                        onNavigateToCatalogue = { currentTab = ScreenTab.CATALOGUE },
+                        onDismiss = { vm.setShowGlobalSearchDialog(false) }
+                    )
                 }
             }
         }

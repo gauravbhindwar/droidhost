@@ -82,7 +82,13 @@ data class DashboardState(
     val cloudflaredInstalled: Boolean = false,
     val cloudflaredVersion: String? = null,
     val cloudflaredDownloading: Boolean = false,
-    val cloudflaredDownloadProgress: String = ""
+    val cloudflaredDownloadProgress: String = "",
+    // Global Search & Marketplace Catalogue
+    val globalSearchQuery: String = "",
+    val showGlobalSearchDialog: Boolean = false,
+    val catalogueFilter: CatalogueCategory = CatalogueCategory.ALL,
+    val catalogueSearchQuery: String = "",
+    val installingCatalogueId: String? = null
 )
 
 class MainViewModel(
@@ -838,6 +844,78 @@ class MainViewModel(
             return ipList.firstOrNull()?.second ?: "127.0.0.1"
         } catch (_: Exception) {
             return "127.0.0.1"
+        }
+    }
+
+    // Global Search & Marketplace Actions
+    fun setGlobalSearchQuery(query: String) {
+        _state.value = _state.value.copy(globalSearchQuery = query)
+    }
+
+    fun setShowGlobalSearchDialog(show: Boolean) {
+        _state.value = _state.value.copy(
+            showGlobalSearchDialog = show,
+            globalSearchQuery = if (!show) "" else _state.value.globalSearchQuery
+        )
+    }
+
+    fun setCatalogueFilter(filter: CatalogueCategory) {
+        _state.value = _state.value.copy(catalogueFilter = filter)
+    }
+
+    fun setCatalogueSearchQuery(query: String) {
+        _state.value = _state.value.copy(catalogueSearchQuery = query)
+    }
+
+    fun installCatalogueItem(item: CatalogueItem, onNavigateToTerminal: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(installingCatalogueId = item.id)
+
+            // 1. Ensure VM is running
+            if (_state.value.vmState != VmState.RUNNING) {
+                startVm()
+                delay(600)
+            }
+
+            // 2. Connect terminal
+            terminalConnect()
+
+            // 3. Immediately switch UI to the Terminal tab so user sees authentic Linux progress
+            onNavigateToTerminal?.invoke()
+            delay(300)
+
+            // 4. Send direct script execution to Linux terminal
+            terminalSend("${item.installScript}\n")
+
+            // 5. Automatically ensure port forwarding rule exists
+            if (item.port != null) {
+                val exists = _state.value.portForwardRules.any { it.hostPort == item.port }
+                if (!exists) {
+                    addPortForwardRule(item.port, item.port)
+                }
+            }
+
+            delay(2000)
+            _state.value = _state.value.copy(installingCatalogueId = null)
+            refresh()
+        }
+    }
+
+    fun isCatalogueItemInstalled(item: CatalogueItem): Boolean {
+        val containers = _state.value.containers
+        return containers.any { c ->
+            c.image.contains(item.image.substringBefore(":"), ignoreCase = true) ||
+            c.names.any { n -> n.contains(item.id, ignoreCase = true) || n.contains(item.name.replace(" ", "-"), ignoreCase = true) } ||
+            (item.port != null && c.ports.any { it.publicPort == item.port })
+        }
+    }
+
+    fun getRunningContainerForCatalogueItem(item: CatalogueItem): Container? {
+        val containers = _state.value.containers
+        return containers.firstOrNull { c ->
+            c.image.contains(item.image.substringBefore(":"), ignoreCase = true) ||
+            c.names.any { n -> n.contains(item.id, ignoreCase = true) || n.contains(item.name.replace(" ", "-"), ignoreCase = true) } ||
+            (item.port != null && c.ports.any { it.publicPort == item.port })
         }
     }
 }

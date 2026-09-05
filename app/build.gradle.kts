@@ -18,6 +18,7 @@ android {
         resources.excludes += "META-INF/LICENSE*"
         resources.excludes += "META-INF/NOTICE*"
         jniLibs.keepDebugSymbols += "**/libandroidx.graphics.path.so"
+        jniLibs.useLegacyPackaging = true
     }
     testOptions { unitTests.isReturnDefaultValues = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

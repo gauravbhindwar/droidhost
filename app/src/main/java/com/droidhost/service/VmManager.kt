@@ -56,7 +56,83 @@ class VmManager(
 
     private var qemuProcess: Process? = null
     private var healthCheckJob: Job? = null
-    private var mockAgentServer: MockAgentServer? = null
+    private var agentProcess: Process? = null
+
+    fun getAgentExecutable(): File {
+        val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libvmagent.so")
+        if (nativeLib.exists() && nativeLib.canExecute()) {
+            return nativeLib
+        }
+
+        val target = File(vmDir, "bin/vm-agent")
+        if (target.exists() && target.canExecute()) {
+            return target
+        }
+
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val assetName = if (abi.contains("x86_64") || abi.contains("amd64")) {
+            "vm/bin/vm-agent-x86_64"
+        } else {
+            "vm/bin/vm-agent-arm64"
+        }
+
+        try {
+            target.parentFile?.mkdirs()
+            context.assets.open(assetName).use { input ->
+                FileOutputStream(target).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            target.setExecutable(true, false)
+            target.setReadable(true, false)
+        } catch (_: Exception) {}
+
+        return if (nativeLib.exists()) nativeLib else target
+    }
+
+    private fun startAgentProcess(token: String): Boolean {
+        stopAgentProcess()
+        val agentExe = getAgentExecutable()
+        return try {
+            val cmd = listOf(
+                agentExe.absolutePath,
+                "-addr", "0.0.0.0:8899",
+                "-token", token,
+                "-shell", "/system/bin/sh"
+            )
+            val pb = ProcessBuilder(cmd)
+            pb.directory(context.filesDir)
+            pb.environment()["PATH"] = "/system/bin:/system/xbin:/data/local/tmp"
+            pb.environment()["HOME"] = context.filesDir.absolutePath
+            pb.environment()["TMPDIR"] = context.cacheDir.absolutePath
+            pb.environment()["TERM"] = "xterm-256color"
+            pb.redirectErrorStream(true)
+            val process = pb.start()
+            agentProcess = process
+
+            scope.launch(Dispatchers.IO) {
+                try {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            android.util.Log.i("VmAgent", line)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("VmManager", "Failed to start native agent: ${e.message}")
+            false
+        }
+    }
+
+    private fun stopAgentProcess() {
+        try {
+            agentProcess?.destroy()
+            agentProcess?.destroyForcibly()
+        } catch (_: Exception) {}
+        agentProcess = null
+    }
 
     val tokenFile: File
         get() = File(vmDir, "agent-token")
@@ -350,8 +426,7 @@ class VmManager(
 
                 if (isScript) {
                     ensureQemuScriptUpdated(qemuBinary)
-                    mockAgentServer?.stop()
-                    mockAgentServer = MockAgentServer(context = context, port = 8899).also { it.start() }
+                    startAgentProcess(token)
                 }
 
                 val pb = ProcessBuilder(command)
@@ -388,8 +463,7 @@ class VmManager(
                 launch(Dispatchers.IO) {
                     val exitCode = process.waitFor()
                     logJob.join()
-                    mockAgentServer?.stop()
-                    mockAgentServer = null
+                    stopAgentProcess()
                     qemuProcess = null
 
                     if (_vmState.value != VmState.STOPPING && _vmState.value != VmState.STOPPED) {
@@ -413,8 +487,7 @@ class VmManager(
                 pollForAgentReadiness(maxAttempts = 30)
 
             } catch (e: Exception) {
-                mockAgentServer?.stop()
-                mockAgentServer = null
+                stopAgentProcess()
                 _lastError.value = "Failed to launch VM process: ${e.message}"
                 _vmState.value = VmState.FAILED
             }
@@ -449,8 +522,7 @@ class VmManager(
 
         scope.launch(Dispatchers.IO) {
             try {
-                mockAgentServer?.stop()
-                mockAgentServer = null
+                stopAgentProcess()
                 qemuProcess?.destroy()
                 delay(1000)
                 if (qemuProcess?.isAlive == true) {
