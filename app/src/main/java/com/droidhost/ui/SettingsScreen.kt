@@ -198,8 +198,6 @@ fun SettingsScreen(
                     }
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-
-                    val ctx = androidx.compose.ui.platform.LocalContext.current
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
