@@ -193,31 +193,34 @@ fun DroidHostApp(agentToken: String) {
                         )
                     },
                 bottomBar = {
-                    NavigationBar {
-                        NavigationBarItem(
-                            selected = currentTab == ScreenTab.HOME,
-                            onClick = { currentTab = ScreenTab.HOME },
-                            icon = { Icon(Icons.Default.Dashboard, contentDescription = "Dashboard") },
-                            label = { Text("Home") }
-                        )
-                        NavigationBarItem(
-                            selected = currentTab == ScreenTab.CONTAINERS,
-                            onClick = { currentTab = ScreenTab.CONTAINERS },
-                            icon = { Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "Containers") },
-                            label = { Text("Containers") }
-                        )
-                        NavigationBarItem(
-                            selected = currentTab == ScreenTab.TERMINAL,
-                            onClick = { currentTab = ScreenTab.TERMINAL },
-                            icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
-                            label = { Text("Terminal") }
-                        )
-                        NavigationBarItem(
-                            selected = currentTab == ScreenTab.SETTINGS,
-                            onClick = { currentTab = ScreenTab.SETTINGS },
-                            icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                            label = { Text("Settings") }
-                        )
+                    val isImeOpen = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
+                    if (!isImeOpen || currentTab != ScreenTab.TERMINAL) {
+                        NavigationBar {
+                            NavigationBarItem(
+                                selected = currentTab == ScreenTab.HOME,
+                                onClick = { currentTab = ScreenTab.HOME },
+                                icon = { Icon(Icons.Default.Dashboard, contentDescription = "Dashboard") },
+                                label = { Text("Home") }
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == ScreenTab.CONTAINERS,
+                                onClick = { currentTab = ScreenTab.CONTAINERS },
+                                icon = { Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "Containers") },
+                                label = { Text("Containers") }
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == ScreenTab.TERMINAL,
+                                onClick = { currentTab = ScreenTab.TERMINAL },
+                                icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
+                                label = { Text("Terminal") }
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == ScreenTab.SETTINGS,
+                                onClick = { currentTab = ScreenTab.SETTINGS },
+                                icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+                                label = { Text("Settings") }
+                            )
+                        }
                     }
                 }
             ) { padding ->

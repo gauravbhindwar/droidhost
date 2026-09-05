@@ -1,5 +1,8 @@
 package com.droidhost.ui
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -288,11 +291,33 @@ private fun ContainerCard(
             )
 
             Spacer(Modifier.height(10.dp))
+            val context = LocalContext.current
+            val webPort = container.ports.firstOrNull { it.publicPort in listOf(80, 8080, 8000, 3000, 5000) }?.publicPort
+                ?: container.ports.firstOrNull { it.publicPort > 0 }?.publicPort
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (container.mappedState == ContainerState.RUNNING && webPort != null) {
+                    FilledTonalButton(
+                        onClick = {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://localhost:$webPort"))
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Icon(Icons.Default.Language, contentDescription = "Open Web", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Open :$webPort", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                }
+
                 if (container.mappedState == ContainerState.RUNNING) {
                     FilledTonalIconButton(onClick = onStop) {
                         Icon(Icons.Default.Stop, contentDescription = "Stop")

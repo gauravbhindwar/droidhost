@@ -59,6 +59,11 @@ class WebSocketTerminalRepository(
             return
         }
 
+        try {
+            webSocket?.cancel()
+        } catch (_: Exception) {}
+        webSocket = null
+
         _connectionState.value = TerminalConnectionState.CONNECTING
 
         val request = Request.Builder()
@@ -88,7 +93,7 @@ class WebSocketTerminalRepository(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 _connectionState.value = TerminalConnectionState.ERROR
-                _output.tryEmit("\r\n[Connection failed: ${t.message ?: "unknown"}]\r\n")
+                _output.tryEmit("\r\n[Connection failed: ${t.message ?: "network error"}]\r\n")
             }
         })
     }
@@ -104,10 +109,22 @@ class WebSocketTerminalRepository(
     }
 
     override fun send(text: String) {
-        webSocket?.send(text)
+        val ws = webSocket
+        if (ws != null && _connectionState.value == TerminalConnectionState.CONNECTED) {
+            ws.send(text)
+        } else {
+            connect()
+            webSocket?.send(text)
+        }
     }
 
     override fun sendBytes(bytes: ByteArray) {
-        webSocket?.send(ByteString.of(*bytes))
+        val ws = webSocket
+        if (ws != null && _connectionState.value == TerminalConnectionState.CONNECTED) {
+            ws.send(ByteString.of(*bytes))
+        } else {
+            connect()
+            webSocket?.send(ByteString.of(*bytes))
+        }
     }
 }

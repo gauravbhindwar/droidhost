@@ -351,7 +351,7 @@ class VmManager(
                 if (isScript) {
                     ensureQemuScriptUpdated(qemuBinary)
                     mockAgentServer?.stop()
-                    mockAgentServer = MockAgentServer(port = 8899).also { it.start() }
+                    mockAgentServer = MockAgentServer(context = context, port = 8899).also { it.start() }
                 }
 
                 val pb = ProcessBuilder(command)

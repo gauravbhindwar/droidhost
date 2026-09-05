@@ -324,14 +324,145 @@ fun SettingsScreen(
                 }
             }
         }
+
+        // Cloudflared Binary (ARM64) Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Cloud,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Cloudflare Tunnel Binary",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (state.cloudflaredInstalled) Color(0xFF2A9D8F).copy(alpha = 0.15f)
+                            else MaterialTheme.colorScheme.errorContainer
+                        ) {
+                            Text(
+                                text = if (state.cloudflaredInstalled) "INSTALLED" else "NOT INSTALLED",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (state.cloudflaredInstalled) Color(0xFF2A9D8F)
+                                else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+
+                    Text(
+                        "Official cloudflared ARM64 Linux binary. Enables outbound reverse tunnels for worldwide SSH and Web UI access without port forwarding.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (state.cloudflaredInstalled && state.cloudflaredVersion != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Version:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    state.cloudflaredVersion ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    if (state.cloudflaredDownloading) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                            )
+                            Text(
+                                state.cloudflaredDownloadProgress.ifEmpty { "Downloading..." },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    } else if (state.cloudflaredDownloadProgress.isNotEmpty()) {
+                        Text(
+                            state.cloudflaredDownloadProgress,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (state.cloudflaredInstalled) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.downloadCloudflared() },
+                            enabled = !state.cloudflaredDownloading,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                if (state.cloudflaredInstalled) Icons.Default.Refresh else Icons.Default.CloudDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (state.cloudflaredInstalled) "Re-download / Update"
+                                else "Download ARM64 Binary"
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showPreSetupDialog) {
         PreSetupDialog(
             diskSizeGb = state.vmConfig.diskGb,
+            existingCloudflareToken = state.cloudflareToken,
             onDismiss = { showPreSetupDialog = false },
-            onStartPreSetup = {
+            onStartPreSetup = { cfToken ->
                 showPreSetupDialog = false
+                if (cfToken.isNotEmpty()) viewModel.saveCloudflareToken(cfToken)
                 viewModel.runPreSetup()
             }
         )
