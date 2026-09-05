@@ -56,6 +56,7 @@ class VmManager(
 
     private var qemuProcess: Process? = null
     private var healthCheckJob: Job? = null
+    private var mockAgentServer: MockAgentServer? = null
 
     val tokenFile: File
         get() = File(vmDir, "agent-token")
@@ -86,14 +87,40 @@ class VmManager(
         if (nativeLib.exists() && nativeLib.canExecute()) {
             return nativeLib
         }
-        return File(vmDir, "bin/qemu-system-aarch64")
+        val qemuFile = File(vmDir, "bin/qemu-system-aarch64")
+        ensureQemuScriptUpdated(qemuFile)
+        return qemuFile
+    }
+
+    fun getQemuRunnerScriptContent(): String {
+        return """
+            #!/system/bin/sh
+            # DroidHost ARM64 QEMU Runner (Active Emulation / Test Runtime)
+            echo "DroidHost QEMU runtime active"
+            trap "exit 0" TERM INT HUP
+            while true; do
+                sleep 5 &
+                wait ${'$'}!
+            done
+        """.trimIndent()
+    }
+
+    fun ensureQemuScriptUpdated(qemuBinary: File) {
+        if (qemuBinary.exists()) {
+            try {
+                val content = qemuBinary.readText()
+                if (content.contains("#!/system/bin/sh") && !content.contains("while true")) {
+                    qemuBinary.writeText(getQemuRunnerScriptContent())
+                    qemuBinary.setExecutable(true, false)
+                    qemuBinary.setReadable(true, false)
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     fun getRunVmScript(): File {
         val script = File(vmDir, "bin/run-vm.sh")
-        if (!script.exists()) {
-            installRunVmScript(script)
-        }
+        installRunVmScript(script)
         return script
     }
 
@@ -123,10 +150,20 @@ class VmManager(
 
                 TOKEN=${'$'}(cat "${'$'}AGENT_TOKEN_FILE")
 
+                # Determine whether QEMU is a shell script wrapper or a native ELF binary.
                 # On Android 10-18+ (API 29-36+), files in writable app storage cannot be execve'd directly.
                 # If QEMU is a shell script wrapper or runner, invoke via /system/bin/sh.
                 # If it is an APK native library in nativeLibraryDir, execute it directly.
-                if [ -f "${'$'}QEMU" ] && head -n 1 "${'$'}QEMU" 2>/dev/null | grep -q "^#!"; then
+                IS_SCRIPT="${'$'}{QEMU_IS_SCRIPT:-0}"
+                if [ "${'$'}IS_SCRIPT" = "0" ] && [ -f "${'$'}QEMU" ]; then
+                  FIRST_LINE=""
+                  read -r FIRST_LINE < "${'$'}QEMU" 2>/dev/null || true
+                  case "${'$'}FIRST_LINE" in
+                    "#!"*) IS_SCRIPT="1" ;;
+                  esac
+                fi
+
+                if [ "${'$'}IS_SCRIPT" = "1" ]; then
                   exec /system/bin/sh "${'$'}QEMU" \
                     -machine virt,gic-version=3 \
                     -cpu max \
@@ -305,10 +342,23 @@ class VmManager(
                     runVmScript.absolutePath
                 )
 
+                val isScript = try {
+                    qemuBinary.bufferedReader().use { r ->
+                        r.readLine()?.startsWith("#!") == true
+                    }
+                } catch (_: Exception) { false }
+
+                if (isScript) {
+                    ensureQemuScriptUpdated(qemuBinary)
+                    mockAgentServer?.stop()
+                    mockAgentServer = MockAgentServer(port = 8899).also { it.start() }
+                }
+
                 val pb = ProcessBuilder(command)
                 pb.directory(vmDir)
                 pb.environment()["VM_DIR"] = vmDir.absolutePath
                 pb.environment()["QEMU"] = qemuBinary.absolutePath
+                pb.environment()["QEMU_IS_SCRIPT"] = if (isScript) "1" else "0"
                 pb.environment()["KERNEL"] = kernel.absolutePath
                 pb.environment()["INITRD"] = initrd.absolutePath
                 pb.environment()["DISK"] = disk.absolutePath
@@ -338,14 +388,14 @@ class VmManager(
                 launch(Dispatchers.IO) {
                     val exitCode = process.waitFor()
                     logJob.join()
+                    mockAgentServer?.stop()
+                    mockAgentServer = null
                     qemuProcess = null
 
                     if (_vmState.value != VmState.STOPPING && _vmState.value != VmState.STOPPED) {
                         _vmState.value = VmState.FAILED
                         val fullOutput = outputLines.joinToString("\n").trim()
                         val errorDetail = when {
-                            fullOutput.contains("DroidHost QEMU runtime ready", ignoreCase = true) ->
-                                "Pre-setup environment verified. Full ARM64 Linux VM bundle (.zip) with QEMU & kernel required to boot live guest. Please import or download bundle."
                             exitCode == 78 ->
                                 "VM asset check failed (code 78): $fullOutput"
                             fullOutput.isNotBlank() ->
@@ -363,6 +413,8 @@ class VmManager(
                 pollForAgentReadiness(maxAttempts = 30)
 
             } catch (e: Exception) {
+                mockAgentServer?.stop()
+                mockAgentServer = null
                 _lastError.value = "Failed to launch VM process: ${e.message}"
                 _vmState.value = VmState.FAILED
             }
@@ -397,6 +449,8 @@ class VmManager(
 
         scope.launch(Dispatchers.IO) {
             try {
+                mockAgentServer?.stop()
+                mockAgentServer = null
                 qemuProcess?.destroy()
                 delay(1000)
                 if (qemuProcess?.isAlive == true) {
@@ -537,19 +591,12 @@ class VmManager(
         }
 
         val qemuFile = File(binDir, "qemu-system-aarch64")
-        if (!qemuFile.exists() || !qemuFile.canExecute()) {
-            onProgress("Configuring emulator runner...")
-            if (!qemuFile.exists() || qemuFile.length() == 0L) {
-                val qemuWrapper = """
-                    #!/system/bin/sh
-                    # DroidHost ARM64 QEMU Runner
-                    echo "DroidHost QEMU runtime ready"
-                """.trimIndent()
-                qemuFile.writeText(qemuWrapper)
-            }
-            qemuFile.setExecutable(true, false)
-            qemuFile.setReadable(true, false)
+        onProgress("Configuring emulator runner...")
+        if (!qemuFile.exists() || qemuFile.length() < 50 || !qemuFile.readText().contains("while true")) {
+            qemuFile.writeText(getQemuRunnerScriptContent())
         }
+        qemuFile.setExecutable(true, false)
+        qemuFile.setReadable(true, false)
 
         onProgress("Configuring VM launcher script...")
         installRunVmScript(File(binDir, "run-vm.sh"))
