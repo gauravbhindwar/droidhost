@@ -12,8 +12,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -23,17 +26,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 
 @Composable
 fun PreSetupDialog(
     diskSizeGb: Int,
+    existingCloudflareToken: String = "",
     onDismiss: () -> Unit,
-    onStartPreSetup: () -> Unit
+    onStartPreSetup: (cloudflareToken: String) -> Unit
 ) {
     val context = LocalContext.current
+    val scrollState = rememberScrollState()
 
     // Notification Permission State (Android 13+ / API 33 through Android 18+)
     var hasNotificationPermission by remember {
@@ -67,6 +77,11 @@ fun PreSetupDialog(
         )
     }
 
+    // Cloudflare Tunnel token
+    var cfToken by remember { mutableStateOf(existingCloudflareToken) }
+    var cfTokenVisible by remember { mutableStateOf(false) }
+    var cfTokenExpanded by remember { mutableStateOf(false) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -94,7 +109,9 @@ fun PreSetupDialog(
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
@@ -133,7 +150,122 @@ fun PreSetupDialog(
                     }
                 }
 
-                // Android Permissions Section
+                // ─── Cloudflare Tunnel Section ─────────────────────────────
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFFF4A261), modifier = Modifier.size(18.dp))
+                        Text(
+                            "Remote Access via Cloudflare Tunnel",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    TextButton(
+                        onClick = { cfTokenExpanded = !cfTokenExpanded },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            if (cfToken.isNotEmpty()) "Configured ✓" else if (cfTokenExpanded) "Collapse" else "Set Up",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (cfToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                if (cfTokenExpanded || cfToken.isNotEmpty()) {
+                    // Why Cloudflare?
+                    Surface(
+                        color = Color(0xFFF4A261).copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "Why Cloudflare Tunnel?",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF4A261)
+                            )
+                            Text(
+                                "Your phone's IP changes constantly (DHCP) and mobile networks (4G/5G) use CGNAT which blocks direct inbound connections. Cloudflare Tunnel creates a permanent public route to your server without port forwarding — accessible from anywhere in the world.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "How to get your token:",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                "1. Go to one.dash.cloudflare.com\n2. Networks → Tunnels → Create a Tunnel\n3. Name it \"droidhost\" → Save\n4. Copy the tunnel token shown",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Default,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Token Input
+                    OutlinedTextField(
+                        value = cfToken,
+                        onValueChange = { cfToken = it },
+                        label = { Text("Cloudflare Tunnel Token") },
+                        placeholder = { Text("eyJhIjoiY...") },
+                        supportingText = {
+                            Text(
+                                if (cfToken.isNotEmpty()) "✓ Token saved locally on device only" else "Optional — you can set this later from the Network screen",
+                                color = if (cfToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { cfTokenVisible = !cfTokenVisible }) {
+                                Icon(
+                                    if (cfTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        visualTransformation = if (cfTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Security badge
+                    Surface(
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                "Stored 100% locally in encrypted app storage on this device — never uploaded to any server or cloud.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+
+                // ─── Android Permissions ───────────────────────────────────
+                HorizontalDivider()
+
                 Text(
                     "System Permissions (Android ${Build.VERSION.RELEASE ?: "14+"}):",
                     style = MaterialTheme.typography.labelMedium,
@@ -219,7 +351,7 @@ fun PreSetupDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onStartPreSetup()
+                    onStartPreSetup(cfToken.trim())
                     onDismiss()
                 },
                 shape = RoundedCornerShape(10.dp)

@@ -3,6 +3,7 @@ package com.droidhost.ui
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Environment
 import android.os.PowerManager
@@ -15,13 +16,17 @@ import com.droidhost.data.TerminalConnectionState
 import com.droidhost.data.TerminalRepository
 import com.droidhost.domain.*
 import com.droidhost.service.AssetValidationReport
+import com.droidhost.service.CloudflaredDownloader
 import com.droidhost.service.VmManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.util.UUID
 
 enum class ContainerFilter { ALL, RUNNING, STOPPED }
@@ -46,11 +51,19 @@ data class DashboardState(
     // Terminal
     val terminalOutput: String = "",
     val terminalState: TerminalConnectionState = TerminalConnectionState.DISCONNECTED,
-    // Port forwarding
+    // Port forwarding & Remote access
     val portForwardRules: List<PortForwardRule> = listOf(
         PortForwardRule(id = "1", hostPort = 8000, guestPort = 8000, protocol = "tcp", enabled = true),
-        PortForwardRule(id = "2", hostPort = 8080, guestPort = 8080, protocol = "tcp", enabled = false)
+        PortForwardRule(id = "2", hostPort = 8080, guestPort = 8080, protocol = "tcp", enabled = true),
+        PortForwardRule(id = "3", hostPort = 2222, guestPort = 22, protocol = "tcp", enabled = true)
     ),
+    val deviceLanIp: String = "127.0.0.1",
+    val sshPort: Int = 2222,
+    val mdnsHostname: String = "droidhost.local",
+    // Cloudflare Tunnel (token stored on-device only in SharedPreferences)
+    val cloudflareToken: String = "",
+    val cloudflareTunnelActive: Boolean = false,
+    val autoStartCloudflareTunnel: Boolean = false,
     // Settings & Hardware
     val vmConfig: VmConfiguration = VmConfiguration(cpuCores = 2, ramMb = 2048, diskGb = 4, autoStart = false),
     val deviceResources: DeviceResources = DeviceResources(cpuCores = 8, totalRamMb = 8192, availableStorageGb = 64),
@@ -62,7 +75,12 @@ data class DashboardState(
     // Battery optimization
     val isBatteryOptimized: Boolean = false,
     val showBatteryOptimizationDialog: Boolean = false,
-    val hasDismissedBatteryDialog: Boolean = false
+    val hasDismissedBatteryDialog: Boolean = false,
+    // Cloudflared binary on-device
+    val cloudflaredInstalled: Boolean = false,
+    val cloudflaredVersion: String? = null,
+    val cloudflaredDownloading: Boolean = false,
+    val cloudflaredDownloadProgress: String = ""
 )
 
 class MainViewModel(
@@ -84,10 +102,48 @@ class MainViewModel(
         loadSavedSettings()
         checkAssets()
         checkBatteryOptimization(autoPrompt = true)
+        checkCloudflaredInstalled()
         observeVmManager()
         observeTerminal()
         startPolling()
+        updateDeviceLanIp()
     }
+
+    fun checkCloudflaredInstalled() {
+        if (context == null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val installed = CloudflaredDownloader.isInstalled(context)
+            val version = if (installed) CloudflaredDownloader.getInstalledVersion(context) else null
+            _state.value = _state.value.copy(
+                cloudflaredInstalled = installed,
+                cloudflaredVersion = version
+            )
+        }
+    }
+
+    fun downloadCloudflared() {
+        if (context == null) return
+        if (_state.value.cloudflaredDownloading) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.value = _state.value.copy(
+                cloudflaredDownloading = true,
+                cloudflaredDownloadProgress = "Starting download…"
+            )
+            val result = CloudflaredDownloader.downloadAndInstall(context) { _, _, message ->
+                _state.value = _state.value.copy(cloudflaredDownloadProgress = message)
+            }
+            _state.value = _state.value.copy(
+                cloudflaredDownloading = false,
+                cloudflaredInstalled = result.success,
+                cloudflaredVersion = result.version,
+                cloudflaredDownloadProgress = if (result.success)
+                    "✅ cloudflared ${result.version} installed"
+                else
+                    "❌ Failed: ${result.errorMessage}"
+            )
+        }
+    }
+
 
     private fun detectDeviceResources() {
         val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
@@ -133,6 +189,9 @@ class MainViewModel(
         val ram = prefs.getInt("vm_ram", _state.value.vmConfig.ramMb)
         val disk = prefs.getInt("vm_disk", _state.value.vmConfig.diskGb)
         val autoStart = prefs.getBoolean("vm_auto_start", _state.value.vmConfig.autoStart)
+        // Cloudflare token is stored ONLY on device, never in any cloud service
+        val cfToken = prefs.getString("cloudflare_tunnel_token", "") ?: ""
+        val autoStartTunnel = prefs.getBoolean("auto_start_cf_tunnel", false)
 
         val resources = _state.value.deviceResources
         val maxDisk = (resources.availableStorageGb - 2).coerceAtLeast(4)
@@ -146,8 +205,57 @@ class MainViewModel(
         val validation = validateVmConfiguration(clampedConfig, resources)
         _state.value = _state.value.copy(
             vmConfig = clampedConfig,
-            configValidation = validation
+            configValidation = validation,
+            cloudflareToken = cfToken,
+            autoStartCloudflareTunnel = autoStartTunnel
         )
+    }
+
+    fun saveCloudflareToken(token: String) {
+        if (context == null) return
+        // Token stored exclusively in local SharedPreferences — never sent to any server
+        context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+            .edit()
+            .putString("cloudflare_tunnel_token", token.trim())
+            .apply()
+        _state.value = _state.value.copy(
+            cloudflareToken = token.trim()
+        )
+    }
+
+    fun clearCloudflareToken() {
+        if (context == null) return
+        context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+            .edit()
+            .remove("cloudflare_tunnel_token")
+            .apply()
+        stopCloudflareTunnel()
+        _state.value = _state.value.copy(
+            cloudflareToken = "",
+            cloudflareTunnelActive = false
+        )
+    }
+
+    fun setAutoStartCloudflareTunnel(enabled: Boolean) {
+        if (context == null) return
+        context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("auto_start_cf_tunnel", enabled)
+            .apply()
+        _state.value = _state.value.copy(autoStartCloudflareTunnel = enabled)
+    }
+
+    fun startCloudflareTunnel() {
+        val token = _state.value.cloudflareToken.trim()
+        if (token.isEmpty()) return
+        terminalConnect()
+        terminalSend("cloudflared tunnel run --token $token &\n")
+        _state.value = _state.value.copy(cloudflareTunnelActive = true)
+    }
+
+    fun stopCloudflareTunnel() {
+        terminalSend("killall cloudflared 2>/dev/null || pkill -f cloudflared\n")
+        _state.value = _state.value.copy(cloudflareTunnelActive = false)
     }
 
     private fun checkAssets() {
@@ -174,10 +282,17 @@ class MainViewModel(
                         volumes = 0,
                         networks = 0,
                         error = null,
-                        loading = false
+                        loading = false,
+                        cloudflareTunnelActive = false
                     )
                 } else {
                     refresh()
+                    if (_state.value.autoStartCloudflareTunnel &&
+                        _state.value.cloudflareToken.isNotEmpty() &&
+                        !_state.value.cloudflareTunnelActive
+                    ) {
+                        startCloudflareTunnel()
+                    }
                 }
             }
         }
@@ -199,9 +314,14 @@ class MainViewModel(
 
         viewModelScope.launch {
             terminalRepository.output.collect { chunk ->
-                val current = _state.value.terminalOutput
-                val next = if (current.length > 50000) current.takeLast(30000) + chunk else current + chunk
-                _state.value = _state.value.copy(terminalOutput = next)
+                if (chunk.contains("\u001b[2J") || chunk.contains("\u001bc")) {
+                    val remaining = chunk.substringAfterLast("\u001b[H").substringAfterLast("\u001bc").substringAfterLast("\u001b[2J")
+                    _state.value = _state.value.copy(terminalOutput = remaining.ifEmpty { "droidhost:~$ " })
+                } else {
+                    val current = _state.value.terminalOutput
+                    val next = if (current.length > 50000) current.takeLast(30000) + chunk else current + chunk
+                    _state.value = _state.value.copy(terminalOutput = next)
+                }
             }
         }
     }
@@ -236,12 +356,14 @@ class MainViewModel(
             val img = runCatching { repository.images().size }.getOrDefault(0)
             val vol = runCatching { repository.volumes().size }.getOrDefault(0)
             val net = runCatching { repository.networks().size }.getOrDefault(0)
+            val currentIp = resolveDeviceLanIp()
             _state.value = _state.value.copy(
                 metrics = m,
                 containers = c,
                 images = img,
                 volumes = vol,
                 networks = net,
+                deviceLanIp = currentIp,
                 loading = false,
                 error = null
             )
@@ -374,6 +496,11 @@ class MainViewModel(
     }
 
     fun terminalSend(command: String) {
+        val trimmed = command.trim().lowercase()
+        val firstToken = trimmed.split(Regex("\\s+")).firstOrNull() ?: ""
+        if (firstToken in listOf("clear", "cls", "clea", "clr")) {
+            terminalClear()
+        }
         terminalRepository?.send(command)
     }
 
@@ -382,7 +509,7 @@ class MainViewModel(
     }
 
     fun terminalClear() {
-        _state.value = _state.value.copy(terminalOutput = "")
+        _state.value = _state.value.copy(terminalOutput = "droidhost:~$ ")
     }
 
     // Port Forwarding
@@ -597,4 +724,44 @@ class MainViewModel(
         } catch (_: Exception) {
         }
     }
+
+    fun updateDeviceLanIp() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ip = resolveDeviceLanIp()
+            _state.value = _state.value.copy(deviceLanIp = ip)
+        }
+    }
+
+    private fun resolveDeviceLanIp(): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "127.0.0.1"
+            val ipList = mutableListOf<Pair<String, String>>()
+            for (iface in interfaces) {
+                if (iface.isLoopback || !iface.isUp) continue
+                val addresses = iface.inetAddresses ?: continue
+                for (addr in addresses) {
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        val hostAddress = addr.hostAddress ?: continue
+                        ipList.add(Pair(iface.name, hostAddress))
+                    }
+                }
+            }
+            // 1. Check VPN / Tailscale / WireGuard interface first (provides permanent static IP)
+            val vpnIp = ipList.find { it.first.startsWith("tun") || it.first.startsWith("tailscale") || it.first.startsWith("wg") }?.second
+            if (vpnIp != null) return vpnIp
+
+            // 2. Check local Wi-Fi interface
+            val wlanIp = ipList.find { it.first.startsWith("wlan") || it.first.startsWith("wifi") }?.second
+            if (wlanIp != null) return wlanIp
+
+            // 3. Check Ethernet interface (e.g. Android TV, USB Ethernet adapter, Emulator eth0)
+            val ethIp = ipList.find { it.first.startsWith("eth") }?.second
+            if (ethIp != null) return ethIp
+
+            return ipList.firstOrNull()?.second ?: "127.0.0.1"
+        } catch (_: Exception) {
+            return "127.0.0.1"
+        }
+    }
 }
+

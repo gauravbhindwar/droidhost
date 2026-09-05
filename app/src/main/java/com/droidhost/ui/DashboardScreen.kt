@@ -1,5 +1,8 @@
 package com.droidhost.ui
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -495,9 +498,11 @@ fun DashboardScreen(
     if (showPreSetupDialog) {
         PreSetupDialog(
             diskSizeGb = state.vmConfig.diskGb,
+            existingCloudflareToken = state.cloudflareToken,
             onDismiss = { showPreSetupDialog = false },
-            onStartPreSetup = {
+            onStartPreSetup = { cfToken ->
                 showPreSetupDialog = false
+                if (cfToken.isNotEmpty()) viewModel.saveCloudflareToken(cfToken)
                 viewModel.runPreSetup()
             }
         )
@@ -813,6 +818,21 @@ private fun RecentContainerRow(
                     color = if (container.mappedState == ContainerState.RUNNING) Color(0xFF2A9D8F) else Color.Gray,
                     maxLines = 1
                 )
+            }
+
+            val context = LocalContext.current
+            val webPort = container.ports.firstOrNull { it.publicPort in listOf(80, 8080, 8000, 3000, 5000) }?.publicPort
+                ?: container.ports.firstOrNull { it.publicPort > 0 }?.publicPort
+
+            if (container.mappedState == ContainerState.RUNNING && webPort != null) {
+                IconButton(onClick = {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://localhost:$webPort"))
+                        context.startActivity(intent)
+                    } catch (_: Exception) {}
+                }) {
+                    Icon(Icons.Default.Language, contentDescription = "Open Web", tint = MaterialTheme.colorScheme.primary)
+                }
             }
 
             if (container.mappedState == ContainerState.RUNNING) {

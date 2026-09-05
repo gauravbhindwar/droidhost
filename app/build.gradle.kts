@@ -14,6 +14,9 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        resources.excludes += "META-INF/DEPENDENCIES"
+        resources.excludes += "META-INF/LICENSE*"
+        resources.excludes += "META-INF/NOTICE*"
         jniLibs.keepDebugSymbols += "**/libandroidx.graphics.path.so"
     }
     testOptions { unitTests.isReturnDefaultValues = true }
@@ -44,6 +47,7 @@ dependencies {
     implementation("io.ktor:ktor-client-okhttp:3.0.0")
     implementation("io.ktor:ktor-client-content-negotiation:3.0.0")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
+    implementation("org.apache.sshd:sshd-core:2.14.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
