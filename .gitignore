@@ -1,0 +1,14 @@
+.gradle/
+.idea/
+build/
+app/build/
+local.properties
+.toolchain/
+vm-agent/droidhost-agent
+*.img
+*.qcow2
+vm/boot/Image
+vm/boot/initrd.img
+vm/bin/.toolchain/
+.github/
+.gradle-local/
