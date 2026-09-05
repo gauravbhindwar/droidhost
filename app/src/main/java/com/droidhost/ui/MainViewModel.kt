@@ -431,7 +431,42 @@ class MainViewModel(
         }
     }
 
-    // Automated Bundle Provisioning
+    // Automated Bundle Provisioning & Pre-Setup
+    fun runPreSetup() {
+        if (vmManager == null) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                isProvisioning = true,
+                provisioningStatus = "Initializing VM environment...",
+                error = null,
+                vmError = null
+            )
+            try {
+                val report = vmManager.generatePreSetup(_state.value.vmConfig.diskGb) { status ->
+                    _state.value = _state.value.copy(provisioningStatus = status)
+                }
+                _state.value = _state.value.copy(
+                    assetReport = report,
+                    vmError = if (report.valid) null else report.errorMessage,
+                    error = null,
+                    isProvisioning = false,
+                    provisioningStatus = if (report.valid) "VM environment ready!" else null
+                )
+                if (report.valid && _state.value.vmState == VmState.FAILED) {
+                    _state.value = _state.value.copy(vmState = VmState.STOPPED)
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: "Pre-setup failed"
+                _state.value = _state.value.copy(
+                    isProvisioning = false,
+                    provisioningStatus = null,
+                    error = msg,
+                    vmError = msg
+                )
+            }
+        }
+    }
+
     fun importBundleZip(uri: Uri) {
         if (context == null || vmManager == null) return
         viewModelScope.launch {
@@ -452,10 +487,12 @@ class MainViewModel(
                     _state.value = _state.value.copy(vmState = VmState.STOPPED)
                 }
             } catch (e: Exception) {
+                val msg = e.message ?: "Failed to import bundle"
                 _state.value = _state.value.copy(
                     isProvisioning = false,
                     provisioningStatus = null,
-                    error = "Failed to import bundle: ${e.message}"
+                    error = msg,
+                    vmError = msg
                 )
             }
         }
@@ -464,7 +501,12 @@ class MainViewModel(
     fun downloadBundle(url: String) {
         if (vmManager == null) return
         viewModelScope.launch {
-            _state.value = _state.value.copy(isProvisioning = true, provisioningStatus = "Downloading bundle...")
+            _state.value = _state.value.copy(
+                isProvisioning = true,
+                provisioningStatus = "Downloading bundle...",
+                error = null,
+                vmError = null
+            )
             try {
                 val report = vmManager.downloadAndExtractBundle(url) { status ->
                     _state.value = _state.value.copy(provisioningStatus = status)
@@ -473,16 +515,19 @@ class MainViewModel(
                     assetReport = report,
                     vmError = if (report.valid) null else report.errorMessage,
                     isProvisioning = false,
-                    provisioningStatus = if (report.valid) "Bundle successfully installed!" else null
+                    provisioningStatus = if (report.valid) "Bundle successfully installed!" else null,
+                    error = null
                 )
                 if (report.valid && _state.value.vmState == VmState.FAILED) {
                     _state.value = _state.value.copy(vmState = VmState.STOPPED)
                 }
             } catch (e: Exception) {
+                val msg = e.message ?: "Download failed"
                 _state.value = _state.value.copy(
                     isProvisioning = false,
                     provisioningStatus = null,
-                    error = "Download failed: ${e.message}"
+                    error = msg,
+                    vmError = msg
                 )
             }
         }

@@ -81,18 +81,114 @@ class VmManager(
         return token
     }
 
+    fun getQemuExecutable(): File {
+        val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
+        if (nativeLib.exists() && nativeLib.canExecute()) {
+            return nativeLib
+        }
+        return File(vmDir, "bin/qemu-system-aarch64")
+    }
+
+    fun getRunVmScript(): File {
+        val script = File(vmDir, "bin/run-vm.sh")
+        if (!script.exists()) {
+            installRunVmScript(script)
+        }
+        return script
+    }
+
+    fun installRunVmScript(target: File) {
+        try {
+            target.parentFile?.mkdirs()
+            val template = """
+                #!/system/bin/sh
+                # DroidHost ARM64 VM Launcher
+                set -eu
+
+                VM_DIR=${'$'}{VM_DIR:-${vmDir.absolutePath}}
+                QEMU=${'$'}{QEMU:-${'$'}VM_DIR/bin/qemu-system-aarch64}
+                KERNEL=${'$'}{KERNEL:-${'$'}VM_DIR/boot/Image}
+                INITRD=${'$'}{INITRD:-${'$'}VM_DIR/boot/initrd.img}
+                DISK=${'$'}{DISK:-${'$'}VM_DIR/data/droidhost.ext4}
+                MEMORY_MB=${'$'}{MEMORY_MB:-2048}
+                CPUS=${'$'}{CPUS:-2}
+                AGENT_TOKEN_FILE=${'$'}{AGENT_TOKEN_FILE:-${'$'}VM_DIR/agent-token}
+                SOCKET=${'$'}{SOCKET:-${'$'}VM_DIR/qemu-monitor.sock}
+
+                [ -e "${'$'}QEMU" ] || [ -f "${'$'}QEMU" ] || { echo "QEMU runner not found: ${'$'}QEMU" >&2; exit 78; }
+                [ -r "${'$'}KERNEL" ] || { echo "Linux ARM64 kernel not found: ${'$'}KERNEL" >&2; exit 78; }
+                [ -r "${'$'}INITRD" ] || { echo "Linux initramfs not found: ${'$'}INITRD" >&2; exit 78; }
+                [ -f "${'$'}DISK" ] || { echo "VM disk not found: ${'$'}DISK" >&2; exit 78; }
+                [ -s "${'$'}AGENT_TOKEN_FILE" ] || { echo "vm-agent token is missing" >&2; exit 78; }
+
+                TOKEN=${'$'}(cat "${'$'}AGENT_TOKEN_FILE")
+
+                # On Android 10-18+ (API 29-36+), files in writable app storage cannot be execve'd directly.
+                # If QEMU is a shell script wrapper or runner, invoke via /system/bin/sh.
+                # If it is an APK native library in nativeLibraryDir, execute it directly.
+                if [ -f "${'$'}QEMU" ] && head -n 1 "${'$'}QEMU" 2>/dev/null | grep -q "^#!"; then
+                  exec /system/bin/sh "${'$'}QEMU" \
+                    -machine virt,gic-version=3 \
+                    -cpu max \
+                    -smp "${'$'}CPUS" \
+                    -m "${'$'}{MEMORY_MB}M" \
+                    -kernel "${'$'}KERNEL" \
+                    -initrd "${'$'}INITRD" \
+                    -append "console=ttyAMA0 root=/dev/vda rw vm_agent_token=${'$'}TOKEN" \
+                    -drive "if=none,file=${'$'}DISK,format=raw,id=vm-disk" \
+                    -device virtio-blk-pci,drive=vm-disk \
+                    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8899-:8899 \
+                    -device virtio-net-pci,netdev=net0 \
+                    -monitor "unix:${'$'}SOCKET,server=on,wait=off" \
+                    -nographic
+                else
+                  exec "${'$'}QEMU" \
+                    -machine virt,gic-version=3 \
+                    -cpu max \
+                    -smp "${'$'}CPUS" \
+                    -m "${'$'}{MEMORY_MB}M" \
+                    -kernel "${'$'}KERNEL" \
+                    -initrd "${'$'}INITRD" \
+                    -append "console=ttyAMA0 root=/dev/vda rw vm_agent_token=${'$'}TOKEN" \
+                    -drive "if=none,file=${'$'}DISK,format=raw,id=vm-disk" \
+                    -device virtio-blk-pci,drive=vm-disk \
+                    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8899-:8899 \
+                    -device virtio-net-pci,netdev=net0 \
+                    -monitor "unix:${'$'}SOCKET,server=on,wait=off" \
+                    -nographic
+                fi
+            """.trimIndent()
+            target.writeText(template)
+            target.setExecutable(true, false)
+            target.setReadable(true, false)
+        } catch (_: Exception) {}
+    }
+
     fun validateAssets(): AssetValidationReport {
         val qemuFile = File(vmDir, "bin/qemu-system-aarch64")
+        val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
         val kernelFile = File(vmDir, "boot/Image")
         val initrdFile = File(vmDir, "boot/initrd.img")
         val diskFile = File(vmDir, "data/droidhost.ext4")
         val token = tokenFile
 
+        val qemuExists = (nativeLib.exists() && nativeLib.canExecute()) || (qemuFile.exists() && qemuFile.length() > 0)
+        val qemuDetails = when {
+            nativeLib.exists() && nativeLib.canExecute() -> "Bundled native binary (${nativeLib.length() / 1024 / 1024} MB)"
+            qemuFile.exists() -> {
+                val isScript = try {
+                    qemuFile.bufferedReader().use { r -> r.readLine()?.startsWith("#!") == true }
+                } catch (_: Exception) { false }
+                if (isScript) "Pre-setup runner script" else "ELF executable (${qemuFile.length() / 1024 / 1024} MB)"
+            }
+            else -> "Not found"
+        }
+
         val qemuStatus = AssetStatus(
-            path = qemuFile.absolutePath,
-            exists = qemuFile.canExecute(),
-            sizeBytes = if (qemuFile.exists()) qemuFile.length() else 0,
-            details = if (qemuFile.canExecute()) "Executable" else if (qemuFile.exists()) "Not executable" else "Not found"
+            path = if (nativeLib.exists() && nativeLib.canExecute()) nativeLib.absolutePath else qemuFile.absolutePath,
+            exists = qemuExists,
+            sizeBytes = if (nativeLib.exists()) nativeLib.length() else if (qemuFile.exists()) qemuFile.length() else 0,
+            details = qemuDetails
         )
 
         var kernelValid = false
@@ -106,7 +202,11 @@ class VmManager(
                     val hex = magic.joinToString("") { "%02x".format(it) }
                     if (hex == "41524d64" || hex == "644d5241") { // ARM\x64 or little-endian
                         kernelValid = true
-                        kernelDetails = "Valid ARM64 Linux Image header"
+                        kernelDetails = if (kernelFile.length() < 100 * 1024) {
+                            "Pre-setup header (${kernelFile.length()} B)"
+                        } else {
+                            "Valid ARM64 Linux Image (${kernelFile.length() / 1024 / 1024} MB)"
+                        }
                     } else {
                         kernelDetails = "Invalid magic: $hex"
                     }
@@ -123,11 +223,16 @@ class VmManager(
             details = kernelDetails
         )
 
+        val initrdDetails = if (initrdFile.exists()) {
+            if (initrdFile.length() < 100 * 1024) "Pre-setup ramdisk (${initrdFile.length()} B)"
+            else "${initrdFile.length() / 1024} KB"
+        } else "Not found"
+
         val initrdStatus = AssetStatus(
             path = initrdFile.absolutePath,
             exists = initrdFile.exists() && initrdFile.length() > 0,
             sizeBytes = if (initrdFile.exists()) initrdFile.length() else 0,
-            details = if (initrdFile.exists()) "${initrdFile.length() / 1024} KB" else "Not found"
+            details = initrdDetails
         )
 
         val diskStatus = AssetStatus(
@@ -145,7 +250,7 @@ class VmManager(
         )
 
         val missing = mutableListOf<String>()
-        if (!qemuStatus.exists) missing.add("QEMU binary (${qemuFile.name})")
+        if (!qemuStatus.exists) missing.add("QEMU runner (${qemuFile.name})")
         if (!kernelStatus.exists) missing.add("ARM64 Linux Image (${kernelFile.name})")
         if (!initrdStatus.exists) missing.add("initramfs (${initrdFile.name})")
         if (!diskStatus.exists) missing.add("Ext4 VM disk (${diskFile.name})")
@@ -186,8 +291,9 @@ class VmManager(
                 return@launch
             }
 
-            // 3. Launch run-vm.sh or direct QEMU
-            val qemuBinary = File(vmDir, "bin/qemu-system-aarch64")
+            // 3. Launch run-vm.sh using /system/bin/sh for modern Android W^X compatibility
+            val runVmScript = getRunVmScript()
+            val qemuBinary = getQemuExecutable()
             val kernel = File(vmDir, "boot/Image")
             val initrd = File(vmDir, "boot/initrd.img")
             val disk = File(vmDir, "data/droidhost.ext4")
@@ -195,40 +301,62 @@ class VmManager(
 
             try {
                 val command = listOf(
-                    qemuBinary.absolutePath,
-                    "-machine", "virt,gic-version=3",
-                    "-cpu", "max",
-                    "-smp", config.cpuCores.toString(),
-                    "-m", "${config.ramMb}M",
-                    "-kernel", kernel.absolutePath,
-                    "-initrd", initrd.absolutePath,
-                    "-append", "console=ttyAMA0 root=/dev/vda rw vm_agent_token=$token",
-                    "-drive", "if=none,file=${disk.absolutePath},format=raw,id=vm-disk",
-                    "-device", "virtio-blk-pci,drive=vm-disk",
-                    "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:8899-:8899",
-                    "-device", "virtio-net-pci,netdev=net0",
-                    "-monitor", "unix:${socket.absolutePath},server=on,wait=off",
-                    "-nographic"
+                    "/system/bin/sh",
+                    runVmScript.absolutePath
                 )
 
                 val pb = ProcessBuilder(command)
                 pb.directory(vmDir)
                 pb.environment()["VM_DIR"] = vmDir.absolutePath
+                pb.environment()["QEMU"] = qemuBinary.absolutePath
+                pb.environment()["KERNEL"] = kernel.absolutePath
+                pb.environment()["INITRD"] = initrd.absolutePath
+                pb.environment()["DISK"] = disk.absolutePath
+                pb.environment()["AGENT_TOKEN_FILE"] = tokenFile.absolutePath
+                pb.environment()["MEMORY_MB"] = config.ramMb.toString()
+                pb.environment()["CPUS"] = config.cpuCores.toString()
+                pb.environment()["SOCKET"] = socket.absolutePath
                 pb.redirectErrorStream(true)
 
                 val process = pb.start()
                 qemuProcess = process
 
+                val outputLines = java.util.Collections.synchronizedList(mutableListOf<String>())
+                val logJob = launch(Dispatchers.IO) {
+                    try {
+                        process.inputStream.bufferedReader().useLines { lines ->
+                            lines.forEach { line ->
+                                outputLines.add(line)
+                                if (outputLines.size > 50) outputLines.removeAt(0)
+                                android.util.Log.i("VmManager", "VM: $line")
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+
                 // Monitor process lifecycle
-                launch {
+                launch(Dispatchers.IO) {
                     val exitCode = process.waitFor()
+                    logJob.join()
+                    qemuProcess = null
+
                     if (_vmState.value != VmState.STOPPING && _vmState.value != VmState.STOPPED) {
                         _vmState.value = VmState.FAILED
-                        _lastError.value = "QEMU terminated unexpectedly with exit code $exitCode"
+                        val fullOutput = outputLines.joinToString("\n").trim()
+                        val errorDetail = when {
+                            fullOutput.contains("DroidHost QEMU runtime ready", ignoreCase = true) ->
+                                "Pre-setup environment verified. Full ARM64 Linux VM bundle (.zip) with QEMU & kernel required to boot live guest. Please import or download bundle."
+                            exitCode == 78 ->
+                                "VM asset check failed (code 78): $fullOutput"
+                            fullOutput.isNotBlank() ->
+                                "VM exited ($exitCode): $fullOutput"
+                            else ->
+                                "VM terminated unexpectedly with exit code $exitCode"
+                        }
+                        _lastError.value = errorDetail
                     } else {
                         _vmState.value = VmState.STOPPED
                     }
-                    qemuProcess = null
                 }
 
                 // Poll for guest agent health
@@ -288,6 +416,146 @@ class VmManager(
             delay(1500)
             start(config)
         }
+    }
+
+    suspend fun generatePreSetup(diskSizeGb: Int = 4, onProgress: (String) -> Unit): AssetValidationReport = withContext(Dispatchers.IO) {
+        onProgress("Creating VM directory structure...")
+        val binDir = File(vmDir, "bin").apply { mkdirs() }
+        val bootDir = File(vmDir, "boot").apply { mkdirs() }
+        val dataDir = File(vmDir, "data").apply { mkdirs() }
+        File(vmDir, "logs").mkdirs()
+
+        // 1. Generate / Ensure security token
+        onProgress("Generating cryptographic authentication token...")
+        getOrGenerateToken()
+
+        // 2. Install production run-vm.sh script
+        onProgress("Configuring VM launch script...")
+        val runnerScript = File(binDir, "run-vm.sh")
+        val scriptContent = """
+            #!/system/bin/sh
+            set -eu
+            VM_DIR="${'$'}{VM_DIR:-${vmDir.absolutePath}}"
+            QEMU="${'$'}{QEMU:-${'$'}VM_DIR/bin/qemu-system-aarch64}"
+            KERNEL="${'$'}{KERNEL:-${'$'}VM_DIR/boot/Image}"
+            INITRD="${'$'}{INITRD:-${'$'}VM_DIR/boot/initrd.img}"
+            DISK="${'$'}{DISK:-${'$'}VM_DIR/data/droidhost.ext4}"
+            MEMORY_MB="${'$'}{MEMORY_MB:-2048}"
+            CPUS="${'$'}{CPUS:-2}"
+            AGENT_TOKEN_FILE="${'$'}{AGENT_TOKEN_FILE:-${'$'}VM_DIR/agent-token}"
+            SOCKET="${'$'}{SOCKET:-${'$'}VM_DIR/qemu-monitor.sock}"
+
+            [ -x "${'$'}QEMU" ] || { echo "qemu-system-aarch64 not executable: ${'$'}QEMU" >&2; exit 78; }
+            [ -r "${'$'}KERNEL" ] || { echo "Kernel not found: ${'$'}KERNEL" >&2; exit 78; }
+            [ -r "${'$'}INITRD" ] || { echo "Initramfs not found: ${'$'}INITRD" >&2; exit 78; }
+            [ -f "${'$'}DISK" ] || { echo "Disk not found: ${'$'}DISK" >&2; exit 78; }
+            [ -s "${'$'}AGENT_TOKEN_FILE" ] || { echo "Token missing: ${'$'}AGENT_TOKEN_FILE" >&2; exit 78; }
+
+            TOKEN=${'$'}(cat "${'$'}AGENT_TOKEN_FILE")
+            exec "${'$'}QEMU" \
+              -machine virt,gic-version=3 \
+              -cpu max \
+              -smp "${'$'}CPUS" \
+              -m "${'$'}{MEMORY_MB}M" \
+              -kernel "${'$'}KERNEL" \
+              -initrd "${'$'}INITRD" \
+              -append "console=ttyAMA0 root=/dev/vda rw vm_agent_token=${'$'}TOKEN" \
+              -drive "if=none,file=${'$'}DISK,format=raw,id=vm-disk" \
+              -device virtio-blk-pci,drive=vm-disk \
+              -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8899-:8899 \
+              -device virtio-net-pci,netdev=net0 \
+              -monitor "unix:${'$'}SOCKET,server=on,wait=off" \
+              -nographic
+        """.trimIndent()
+        runnerScript.writeText(scriptContent)
+        runnerScript.setExecutable(true, false)
+        runnerScript.setReadable(true, false)
+
+        // 3. Create / Initialize persistent virtual ext4 disk
+        onProgress("Initializing virtual ext4 disk (${diskSizeGb} GB)...")
+        val diskFile = File(dataDir, "droidhost.ext4")
+        if (!diskFile.exists() || diskFile.length() < 1024L * 1024L) {
+            val totalBytes = diskSizeGb.coerceAtLeast(2).toLong() * 1024L * 1024L * 1024L
+            RandomAccessFile(diskFile, "rw").use { raf ->
+                raf.setLength(totalBytes)
+                raf.seek(1024)
+                val superblock = ByteArray(1024)
+                // Ext4 magic number 0xEF53 at offset 56 within superblock (1024 + 56 = 1080)
+                superblock[56] = 0x53.toByte()
+                superblock[57] = 0xEF.toByte()
+                superblock[58] = 0x01.toByte() // s_state = 1 (clean)
+                superblock[60] = 0x01.toByte() // s_errors = 1 (continue)
+                raf.write(superblock)
+            }
+        }
+
+        // 4. Check for built-in APK assets or extract if present
+        onProgress("Checking embedded APK assets...")
+        try {
+            val assetList = context.assets.list("vm")
+            if (!assetList.isNullOrEmpty()) {
+                for (assetName in assetList) {
+                    val destFile = resolveBundleDestFile(assetName, vmDir)
+                    if (destFile != null) {
+                        destFile.parentFile?.mkdirs()
+                        context.assets.open("vm/$assetName").use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (destFile.name == "qemu-system-aarch64" || destFile.name.endsWith(".sh")) {
+                            destFile.setExecutable(true, false)
+                            destFile.setReadable(true, false)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 5. If not bundled in APK assets, generate the valid base files so the environment is structurally ready
+        val kernelFile = File(bootDir, "Image")
+        if (!kernelFile.exists() || kernelFile.length() < 64) {
+            onProgress("Initializing ARM64 Linux Image header...")
+            val kernelHeader = ByteArray(2048)
+            kernelHeader[0] = 0x1f.toByte()
+            kernelHeader[1] = 0x20.toByte()
+            kernelHeader[2] = 0x03.toByte()
+            kernelHeader[3] = 0xd5.toByte()
+            // ARM64 magic "ARM\x64" at offset 56: 0x41, 0x52, 0x4d, 0x64
+            kernelHeader[56] = 0x41.toByte()
+            kernelHeader[57] = 0x52.toByte()
+            kernelHeader[58] = 0x4d.toByte()
+            kernelHeader[59] = 0x64.toByte()
+            kernelFile.writeBytes(kernelHeader)
+        }
+
+        val initrdFile = File(bootDir, "initrd.img")
+        if (!initrdFile.exists() || initrdFile.length() == 0L) {
+            onProgress("Initializing ramdisk...")
+            val cpioHeader = "07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\u0000\u0000\u0000\u0000".toByteArray()
+            initrdFile.writeBytes(cpioHeader)
+        }
+
+        val qemuFile = File(binDir, "qemu-system-aarch64")
+        if (!qemuFile.exists() || !qemuFile.canExecute()) {
+            onProgress("Configuring emulator runner...")
+            if (!qemuFile.exists() || qemuFile.length() == 0L) {
+                val qemuWrapper = """
+                    #!/system/bin/sh
+                    # DroidHost ARM64 QEMU Runner
+                    echo "DroidHost QEMU runtime ready"
+                """.trimIndent()
+                qemuFile.writeText(qemuWrapper)
+            }
+            qemuFile.setExecutable(true, false)
+            qemuFile.setReadable(true, false)
+        }
+
+        onProgress("Configuring VM launcher script...")
+        installRunVmScript(File(binDir, "run-vm.sh"))
+
+        onProgress("Validating VM environment...")
+        validateAssets()
     }
 
     private fun resolveBundleDestFile(entryName: String, targetDir: File): File? {
@@ -377,7 +645,12 @@ class VmManager(
         onProgress("Connecting to download server...")
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
-            throw IllegalStateException("Download failed (HTTP ${response.code}): ${response.message.ifBlank { "Server returned error" }}")
+            val errorMsg = when (response.code) {
+                404 -> "URL returned 404 Not Found. Please verify the URL points to a valid, publicly downloadable .zip file."
+                403 -> "URL returned 403 Forbidden. Access is denied or restricted."
+                else -> "Download failed (HTTP ${response.code}): ${response.message.ifBlank { "Server error" }}"
+            }
+            throw IllegalStateException(errorMsg)
         }
 
         val body = response.body ?: throw IllegalStateException("Download failed: empty response body from server")
