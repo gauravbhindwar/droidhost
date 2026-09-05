@@ -11,6 +11,10 @@ import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +38,7 @@ fun DashboardScreen(
     onNavigateToNetwork: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
+    var showDownloadDialog by remember { mutableStateOf(false) }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importBundleZip(it) }
     }
@@ -76,6 +81,66 @@ fun DashboardScreen(
             }
         }
 
+        // Guest VM Assets Required Banner (when assets are missing and not currently failed or provisioning)
+        if (state.assetReport != null && !state.assetReport.valid && !state.isProvisioning && state.vmState != VmState.FAILED) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "Assets Required",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Guest VM Assets Required",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "The ARM64 Linux VM bundle (kernel, initrd, QEMU binary, root disk) must be installed to run containers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { showDownloadDialog = true },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Download")
+                            }
+                            OutlinedButton(
+                                onClick = { filePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Import (.zip)")
+                            }
+                            OutlinedButton(
+                                onClick = onNavigateToSettings
+                            ) {
+                                Text("Details")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // VM Boot / Asset Error Banner
         if (state.vmState == VmState.FAILED && state.vmError != null && !state.isProvisioning) {
             item {
@@ -101,14 +166,27 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { showDownloadDialog = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Download")
+                            }
                             Button(
                                 onClick = { filePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.85f)),
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Auto-Install Bundle (.zip)")
+                                Text("Import (.zip)")
                             }
                             OutlinedButton(
                                 onClick = onNavigateToSettings,
@@ -259,13 +337,34 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(12.dp))
-                        Button(
-                            onClick = { viewModel.startVm() },
-                            enabled = state.vmState != VmState.STARTING
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (state.vmState == VmState.STARTING) "Starting VM..." else "Start VM")
+                        if (state.assetReport?.valid == false) {
+                            Text(
+                                "Guest VM assets not yet installed.",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { showDownloadDialog = true }) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Download Bundle")
+                                }
+                                OutlinedButton(onClick = { filePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }) {
+                                    Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Import (.zip)")
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.startVm() },
+                                enabled = state.vmState != VmState.STARTING
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (state.vmState == VmState.STARTING) "Starting VM..." else "Start VM")
+                            }
                         }
                     }
                 }
@@ -283,6 +382,16 @@ fun DashboardScreen(
                 RecentContainerRow(container = container, viewModel = viewModel, onInspect = onNavigateToContainers)
             }
         }
+    }
+
+    if (showDownloadDialog) {
+        DownloadBundleDialog(
+            onDismiss = { showDownloadDialog = false },
+            onDownload = { url ->
+                showDownloadDialog = false
+                viewModel.downloadBundle(url)
+            }
+        )
     }
 }
 

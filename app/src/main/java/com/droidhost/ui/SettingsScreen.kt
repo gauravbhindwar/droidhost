@@ -326,46 +326,6 @@ fun SettingsScreen(
     }
 }
 
-@Composable
-private fun DownloadBundleDialog(
-    onDismiss: () -> Unit,
-    onDownload: (String) -> Unit
-) {
-    var urlText by remember { mutableStateOf("https://github.com/droidhost/releases/download/v0.1.0/vm-bundle.zip") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Download VM Bundle") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Enter the direct URL to the ARM64 guest bundle zip archive:",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                OutlinedTextField(
-                    value = urlText,
-                    onValueChange = { urlText = it },
-                    label = { Text("Bundle Archive URL") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (urlText.isNotBlank()) onDownload(urlText.trim())
-            }) {
-                Text("Download & Install")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
 
 @Composable
 private fun AssetItem(name: String, status: AssetStatus) {
