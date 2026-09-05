@@ -14,13 +14,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.RandomAccessFile
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.SecureRandom
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 data class AssetStatus(
@@ -289,6 +290,34 @@ class VmManager(
         }
     }
 
+    private fun resolveBundleDestFile(entryName: String, targetDir: File): File? {
+        val clean = entryName.replace('\\', '/').trim().trimStart('/')
+        if (clean.isEmpty() || clean.contains("..")) return null
+
+        val fileName = File(clean).name
+        val lower = fileName.lowercase()
+
+        val relativePath = when {
+            lower == "qemu-system-aarch64" || clean.endsWith("/qemu-system-aarch64") -> "bin/qemu-system-aarch64"
+            lower == "run-vm.sh" || clean.endsWith("/run-vm.sh") -> "bin/run-vm.sh"
+            lower == "image" || lower == "vmlinuz" || clean.endsWith("/boot/Image") -> "boot/Image"
+            lower == "initrd.img" || lower == "initrd" || clean.endsWith("/boot/initrd.img") -> "boot/initrd.img"
+            lower == "droidhost.ext4" || clean.endsWith("/data/droidhost.ext4") -> "data/droidhost.ext4"
+            lower.endsWith(".ext4") || lower.endsWith(".qcow2") -> "data/droidhost.ext4"
+            clean.startsWith("vm/") -> clean.removePrefix("vm/")
+            clean.startsWith("droidhost/") -> clean.removePrefix("droidhost/")
+            else -> {
+                val parts = clean.split("/")
+                if (parts.size > 1 && (parts[1] == "bin" || parts[1] == "boot" || parts[1] == "data")) {
+                    parts.drop(1).joinToString("/")
+                } else {
+                    clean
+                }
+            }
+        }
+        return File(targetDir, relativePath)
+    }
+
     suspend fun extractBundleZip(inputStream: InputStream, onStatus: (String) -> Unit): AssetValidationReport = withContext(Dispatchers.IO) {
         if (!vmDir.exists()) vmDir.mkdirs()
         onStatus("Extracting guest assets...")
@@ -296,19 +325,17 @@ class VmManager(
         ZipInputStream(inputStream.buffered()).use { zipIn ->
             var entry = zipIn.nextEntry
             while (entry != null) {
-                val cleanName = entry.name.removePrefix("vm/").removePrefix("./").trim()
-                if (cleanName.isNotEmpty() && !cleanName.contains("..")) {
-                    val destFile = File(vmDir, cleanName)
-                    if (entry.isDirectory) {
-                        destFile.mkdirs()
-                    } else {
+                if (!entry.isDirectory) {
+                    val destFile = resolveBundleDestFile(entry.name, vmDir)
+                    if (destFile != null) {
                         destFile.parentFile?.mkdirs()
                         onStatus("Installing ${destFile.name}...")
                         FileOutputStream(destFile).use { out ->
                             zipIn.copyTo(out)
                         }
-                        if (cleanName.contains("qemu-system-aarch64") || cleanName.endsWith(".sh")) {
+                        if (destFile.name == "qemu-system-aarch64" || destFile.name.endsWith(".sh") || destFile.parentFile?.name == "bin") {
                             destFile.setExecutable(true, false)
+                            destFile.setReadable(true, false)
                         }
                     }
                 }
@@ -324,19 +351,82 @@ class VmManager(
     }
 
     suspend fun downloadAndExtractBundle(urlString: String, onProgress: (String) -> Unit): AssetValidationReport = withContext(Dispatchers.IO) {
-        onProgress("Connecting to download server...")
-        val url = URL(urlString)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 60000
-        conn.connect()
-
-        if (conn.responseCode !in 200..299) {
-            throw IllegalStateException("HTTP ${conn.responseCode}: ${conn.responseMessage}")
+        onProgress("Preparing download...")
+        var targetUrl = urlString.trim()
+        if (!targetUrl.startsWith("http://", ignoreCase = true) && !targetUrl.startsWith("https://", ignoreCase = true)) {
+            targetUrl = "https://$targetUrl"
+        }
+        if (targetUrl.contains("github.com", ignoreCase = true) && targetUrl.contains("/blob/")) {
+            targetUrl = targetUrl.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
         }
 
-        conn.inputStream.use { stream ->
-            extractBundleZip(stream, onProgress)
+        val client = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.MINUTES)
+            .callTimeout(30, TimeUnit.MINUTES)
+            .build()
+
+        val request = Request.Builder()
+            .url(targetUrl)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) DroidHost/1.0")
+            .header("Accept", "*/*")
+            .build()
+
+        onProgress("Connecting to download server...")
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw IllegalStateException("Download failed (HTTP ${response.code}): ${response.message.ifBlank { "Server returned error" }}")
+        }
+
+        val body = response.body ?: throw IllegalStateException("Download failed: empty response body from server")
+        val contentLength = body.contentLength()
+
+        if (!vmDir.exists()) vmDir.mkdirs()
+        val tempZip = File(vmDir, "bundle-download.tmp")
+        if (tempZip.exists()) tempZip.delete()
+
+        try {
+            val buffer = ByteArray(64 * 1024)
+            var totalBytesRead = 0L
+            var lastReportTime = 0L
+
+            body.byteStream().use { input ->
+                FileOutputStream(tempZip).use { output ->
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+                        val now = System.currentTimeMillis()
+                        if (now - lastReportTime > 250) {
+                            lastReportTime = now
+                            val downloadedMb = totalBytesRead / (1024 * 1024)
+                            if (contentLength > 0) {
+                                val percent = (totalBytesRead * 100 / contentLength).toInt().coerceIn(0, 100)
+                                val totalMb = contentLength / (1024 * 1024)
+                                onProgress("Downloading: $downloadedMb MB / $totalMb MB ($percent%)")
+                            } else {
+                                onProgress("Downloading: $downloadedMb MB...")
+                            }
+                        }
+                    }
+                    output.flush()
+                }
+            }
+
+            if (!tempZip.exists() || tempZip.length() == 0L) {
+                throw IllegalStateException("Downloaded file is empty")
+            }
+
+            onProgress("Download complete. Extracting guest assets...")
+            tempZip.inputStream().use { stream ->
+                extractBundleZip(stream, onProgress)
+            }
+        } finally {
+            if (tempZip.exists()) {
+                tempZip.delete()
+            }
         }
     }
 
