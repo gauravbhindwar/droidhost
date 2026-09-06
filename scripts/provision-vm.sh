@@ -17,7 +17,7 @@ echo "==> Checking connected ADB devices..."
 adb get-state >/dev/null 2>&1 || { echo "Error: No Android device detected via ADB" >&2; exit 1; }
 
 echo "==> Preparing target directory on device..."
-adb shell "run-as com.droidhost mkdir -p files/vm/bin files/vm/boot files/vm/data"
+adb shell "run-as com.droidhost mkdir -p files/vm/bin files/vm/boot files/vm/data files/vm/qemu"
 
 if [ -f "$BUNDLE_PATH" ] && [ "${BUNDLE_PATH##*.}" = "zip" ]; then
   echo "==> Pushing zip bundle to device temporary storage..."
@@ -36,8 +36,8 @@ else
   exit 1
 fi
 
-echo "==> Setting executable permissions on emulator..."
-adb shell "run-as com.droidhost chmod 755 files/vm/bin/qemu-system-aarch64 2>/dev/null || true"
+echo "==> Setting executable permissions on emulator and runners..."
+adb shell "run-as com.droidhost chmod 755 files/vm/bin/qemu-system-aarch64 files/vm/bin/run-vm.sh files/vm/qemu/lib/ld-musl-aarch64.so.1 files/vm/qemu/bin/qemu-system-aarch64 2>/dev/null || true"
 
 echo "==> Verifying provisioned assets..."
 adb shell "run-as com.droidhost ls -la files/vm/bin files/vm/boot files/vm/data"

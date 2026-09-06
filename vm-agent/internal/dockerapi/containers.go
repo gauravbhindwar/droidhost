@@ -2,6 +2,9 @@ package dockerapi
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -230,6 +233,139 @@ func (c *Client) RestartContainer(ctx context.Context, id string, timeout int) e
 		q.Set("t", strconv.Itoa(timeout))
 	}
 	return c.post(ctx, "/containers/"+id+"/restart", q)
+}
+
+// PauseContainer pauses a running container.
+func (c *Client) PauseContainer(ctx context.Context, id string) error {
+	return c.post(ctx, "/containers/"+id+"/pause", nil)
+}
+
+// UnpauseContainer unpauses a paused container.
+func (c *Client) UnpauseContainer(ctx context.Context, id string) error {
+	return c.post(ctx, "/containers/"+id+"/unpause", nil)
+}
+
+// PullImage pulls a Docker image from a registry.
+func (c *Client) PullImage(ctx context.Context, image string) error {
+	q := url.Values{}
+	q.Set("fromImage", image)
+	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	// Drain response stream to ensure pull completion
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// DeploySpec specifies parameters for single-container deployment.
+type DeploySpec struct {
+	Name          string            `json:"name"`
+	Image         string            `json:"image"`
+	HostPort      int               `json:"hostPort"`
+	ContainerPort int               `json:"containerPort"`
+	Protocol      string            `json:"protocol"`
+	Env           map[string]string `json:"env"`
+	Volumes       []string          `json:"volumes"`
+	RestartPolicy string            `json:"restartPolicy"`
+	MemoryBytes   int64             `json:"memoryBytes"`
+}
+
+// DeployContainer pulls the required image, checks port conflicts, creates, and starts the container.
+func (c *Client) DeployContainer(ctx context.Context, spec DeploySpec) (*ContainerDetail, error) {
+	if spec.Image == "" {
+		return nil, fmt.Errorf("image is required")
+	}
+	if spec.Protocol == "" {
+		spec.Protocol = "tcp"
+	}
+	if spec.RestartPolicy == "" {
+		spec.RestartPolicy = "unless-stopped"
+	}
+
+	// 1. Port conflict check if hostPort is specified
+	if spec.HostPort > 0 {
+		existing, err := c.ListContainers(ctx, true)
+		if err == nil {
+			for _, cont := range existing {
+				for _, p := range cont.Ports {
+					if p.PublicPort == spec.HostPort {
+						return nil, fmt.Errorf("port conflict: host port %d is already occupied by container %s", spec.HostPort, cont.Names)
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Pull image
+	if err := c.PullImage(ctx, spec.Image); err != nil {
+		return nil, fmt.Errorf("failed to pull image %s: %w", spec.Image, err)
+	}
+
+	// 3. Prepare container config
+	envList := make([]string, 0, len(spec.Env))
+	for k, v := range spec.Env {
+		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	exposedPorts := make(map[string]struct{})
+	portBindings := make(map[string][]map[string]string)
+	if spec.ContainerPort > 0 {
+		portKey := fmt.Sprintf("%d/%s", spec.ContainerPort, spec.Protocol)
+		exposedPorts[portKey] = struct{}{}
+		if spec.HostPort > 0 {
+			portBindings[portKey] = []map[string]string{
+				{
+					"HostPort": strconv.Itoa(spec.HostPort),
+					"HostIp":   "0.0.0.0",
+				},
+			}
+		}
+	}
+
+	hostConfig := map[string]any{
+		"RestartPolicy": map[string]string{
+			"Name": spec.RestartPolicy,
+		},
+		"PortBindings": portBindings,
+	}
+	if len(spec.Volumes) > 0 {
+		hostConfig["Binds"] = spec.Volumes
+	}
+	if spec.MemoryBytes > 0 {
+		hostConfig["Memory"] = spec.MemoryBytes
+	}
+
+	createPayload := map[string]any{
+		"Image":        spec.Image,
+		"Env":          envList,
+		"ExposedPorts": exposedPorts,
+		"HostConfig":   hostConfig,
+	}
+
+	q := url.Values{}
+	if spec.Name != "" {
+		q.Set("name", spec.Name)
+	}
+
+	var createResp struct {
+		ID       string   `json:"Id"`
+		Warnings []string `json:"Warnings"`
+	}
+	if err := c.postJSON(ctx, "/containers/create", q, createPayload, &createResp); err != nil {
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	// 4. Start container
+	if err := c.StartContainer(ctx, createResp.ID); err != nil {
+		return nil, fmt.Errorf("failed to start container %s: %w", createResp.ID, err)
+	}
+
+	return c.InspectContainer(ctx, createResp.ID)
 }
 
 // RemoveContainer removes a container, optionally forcing and removing volumes.

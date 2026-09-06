@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -87,7 +88,7 @@ fun SettingsScreen(
 
         item {
             Text(
-                "VM HARDWARE ALLOCATION",
+                "VM SERVER PROFILE & HARDWARE",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
@@ -96,8 +97,63 @@ fun SettingsScreen(
 
         // Hardware Sliders Card
         item {
+            val presets = remember(state.deviceResources) { com.droidhost.domain.ServerProfile.getPresets(state.deviceResources) }
+            val isVmRunning = state.vmState == com.droidhost.domain.VmState.RUNNING
+
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        "Resource Preset:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        presets.forEach { preset ->
+                            val isSelected = (preset.name != "Custom" && cpuCores.toInt() == preset.cpuCores && ramMb.toInt() == preset.memoryMb && diskGb.toInt() == preset.diskGb)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    if (preset.name != "Custom") {
+                                        cpuCores = preset.cpuCores.toFloat()
+                                        ramMb = preset.memoryMb.toFloat()
+                                        diskGb = preset.diskGb.toFloat().coerceAtLeast(state.vmConfig.diskGb.toFloat())
+                                    }
+                                },
+                                label = { Text(preset.name) }
+                            )
+                        }
+                    }
+
+                    if (isVmRunning) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Info,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "VM is running. CPU and RAM changes will take effect after restarting the VM. Virtual disk grows dynamically.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+                    }
+
                     // CPU
                     Column {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -131,7 +187,7 @@ fun SettingsScreen(
                     Column {
                         val maxDisk = (state.deviceResources.availableStorageGb - 2).coerceAtLeast(4)
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Disk Size: ${diskGb.toInt()} GB", fontWeight = FontWeight.Bold)
+                            Text("Virtual Disk Capacity: ${diskGb.toInt()} GB", fontWeight = FontWeight.Bold)
                             Text("Max: $maxDisk GB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Slider(
@@ -139,6 +195,11 @@ fun SettingsScreen(
                             onValueChange = { diskGb = it },
                             valueRange = 4f..maxDisk.toFloat(),
                             steps = (maxDisk - 5).coerceAtLeast(0)
+                        )
+                        Text(
+                            "Disks are provisioned sparsely on Android storage and automatically expand up to virtual capacity.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -281,6 +342,36 @@ fun SettingsScreen(
                         AssetItem("Agent Bearer Token (agent-token)", report.token)
                     } else {
                         Text("Diagnostics not available.", style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    if (state.isProvisioning) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Text("Provisioning VM...", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                }
+                                val status = state.provisioningStatus ?: "Preparing..."
+                                val percentMatch = Regex("(\\d+)%").find(status)
+                                val percentValue = percentMatch?.groupValues?.get(1)?.toFloatOrNull()?.div(100f)
+
+                                if (percentValue != null) {
+                                    LinearProgressIndicator(
+                                        progress = { percentValue },
+                                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
+                                    )
+                                } else {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
+                                    )
+                                }
+                                Text(status, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(6.dp))
@@ -458,11 +549,13 @@ fun SettingsScreen(
     if (showPreSetupDialog) {
         PreSetupDialog(
             diskSizeGb = state.vmConfig.diskGb,
+            deviceResources = state.deviceResources,
             existingCloudflareToken = state.cloudflareToken,
             onDismiss = { showPreSetupDialog = false },
-            onStartPreSetup = { cfToken ->
+            onStartPreSetup = { profile, cfToken ->
                 showPreSetupDialog = false
                 if (cfToken.isNotEmpty()) viewModel.saveCloudflareToken(cfToken)
+                viewModel.applyServerProfile(profile, autoStart = false)
                 viewModel.runPreSetup()
             }
         )

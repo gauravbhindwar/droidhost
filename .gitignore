@@ -5,10 +5,31 @@ app/build/
 local.properties
 .toolchain/
 vm-agent/droidhost-agent
+vm-agent/vm-agent-arm64
+dist/
 *.img
 *.qcow2
+*.ext4
+*.zip
+*.tmp
 vm/boot/Image
 vm/boot/initrd.img
 vm/bin/.toolchain/
 .github/
 .gradle-local/
+
+# VM Assets & Disk Images
+app/src/main/assets/vm/boot/
+app/src/main/assets/vm/data/
+app/src/main/assets/vm/qemu-libs.dh
+app/src/main/assets/vm/*.img
+app/src/main/assets/vm/*.ext4
+
+# Extracted native libraries (e.g. libz.so.1, libqemu, libslirp, etc.)
+app/src/main/jniLibs/arm64-v8a/*
+!app/src/main/jniLibs/arm64-v8a/libproot.so
+!app/src/main/jniLibs/arm64-v8a/libvmagent.so
+app/src/main/jniLibs/x86_64/*
+!app/src/main/jniLibs/x86_64/libproot.so
+!app/src/main/jniLibs/x86_64/libvmagent.so
+

@@ -55,120 +55,140 @@ fun ContainersScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        // Search bar
-        OutlinedTextField(
-            value = state.containerSearchQuery,
-            onValueChange = { viewModel.setContainerSearch(it) },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search by name, image, or ID...") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-            trailingIcon = {
-                if (state.containerSearchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.setContainerSearch("") }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear")
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp)
-        )
-
-        Spacer(Modifier.height(10.dp))
-
-        // Filter chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
         ) {
-            FilterChip(
-                selected = state.containerFilter == ContainerFilter.ALL,
-                onClick = { viewModel.setContainerFilter(ContainerFilter.ALL) },
-                label = { Text("All (${state.containers.size})") }
-            )
-            FilterChip(
-                selected = state.containerFilter == ContainerFilter.RUNNING,
-                onClick = { viewModel.setContainerFilter(ContainerFilter.RUNNING) },
-                label = {
-                    Text("Running (${state.containers.count { it.mappedState == ContainerState.RUNNING }})")
-                }
-            )
-            FilterChip(
-                selected = state.containerFilter == ContainerFilter.STOPPED,
-                onClick = { viewModel.setContainerFilter(ContainerFilter.STOPPED) },
-                label = {
-                    Text("Stopped (${state.containers.count { it.mappedState != ContainerState.RUNNING }})")
-                }
-            )
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        if (state.vmState != VmState.RUNNING) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.CloudOff,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "VM is Offline",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "Start the ARM64 Linux VM to view and manage containers.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Button(onClick = { viewModel.startVm() }) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Start VM")
+            // Search bar
+            OutlinedTextField(
+                value = state.containerSearchQuery,
+                onValueChange = { viewModel.setContainerSearch(it) },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search by name, image, or ID...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                trailingIcon = {
+                    if (state.containerSearchQuery.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.setContainerSearch("") }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear")
+                        }
                     }
-                }
-            }
-        } else if (filteredContainers.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // Filter chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    if (state.containerSearchQuery.isNotBlank()) "No containers match your search"
-                    else "No containers found on Docker Engine",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                FilterChip(
+                    selected = state.containerFilter == ContainerFilter.ALL,
+                    onClick = { viewModel.setContainerFilter(ContainerFilter.ALL) },
+                    label = { Text("All (${state.containers.size})") }
+                )
+                FilterChip(
+                    selected = state.containerFilter == ContainerFilter.RUNNING,
+                    onClick = { viewModel.setContainerFilter(ContainerFilter.RUNNING) },
+                    label = {
+                        Text("Running (${state.containers.count { it.mappedState == ContainerState.RUNNING }})")
+                    }
+                )
+                FilterChip(
+                    selected = state.containerFilter == ContainerFilter.STOPPED,
+                    onClick = { viewModel.setContainerFilter(ContainerFilter.STOPPED) },
+                    label = {
+                        Text("Stopped (${state.containers.count { it.mappedState != ContainerState.RUNNING }})")
+                    }
                 )
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
-                items(filteredContainers, key = { it.id }) { container ->
-                    ContainerCard(
-                        container = container,
-                        onInspect = { viewModel.selectContainerForInspect(container.id) },
-                        onStart = { viewModel.action(container.id, "start") },
-                        onStop = { viewModel.action(container.id, "stop") },
-                        onRestart = { viewModel.action(container.id, "restart") },
-                        onDelete = { containerToDelete = container }
+
+            Spacer(Modifier.height(10.dp))
+
+            if (state.vmState != VmState.RUNNING) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Start the ARM64 server to view and deploy Docker containers.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            } else if (filteredContainers.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            if (state.containerSearchQuery.isNotBlank()) "No containers match your search"
+                            else "No active containers running.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { viewModel.openDeployDialog() }) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Deploy Container")
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(filteredContainers, key = { it.id }) { container ->
+                        ContainerCard(
+                            container = container,
+                            onInspect = { viewModel.selectContainerForInspect(container.id) },
+                            onStart = { viewModel.action(container.id, "start") },
+                            onStop = { viewModel.action(container.id, "stop") },
+                            onRestart = { viewModel.action(container.id, "restart") },
+                            onPause = { viewModel.pauseContainer(container.id) },
+                            onUnpause = { viewModel.unpauseContainer(container.id) },
+                            onDelete = { containerToDelete = container }
+                        )
+                    }
                 }
             }
         }
+
+        // Deploy Floating Action Button
+        if (state.vmState == VmState.RUNNING) {
+            FloatingActionButton(
+                onClick = { viewModel.openDeployDialog() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ) {
+                Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Add, contentDescription = "Deploy Container")
+                    Spacer(Modifier.width(6.dp))
+                    Text("Deploy", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    // Deploy Application Dialog
+    if (state.showDeployDialog) {
+        DeployAppDialog(
+            onDismiss = { viewModel.closeDeployDialog() },
+            deployProgress = state.deployProgress,
+            onDeploySingle = { spec -> viewModel.deploySingleContainer(spec) },
+            onDeployCompose = { name, yaml -> viewModel.deployComposeProject(name, yaml) }
+        )
     }
 
     // Delete Confirmation Dialog
@@ -228,6 +248,8 @@ private fun ContainerCard(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRestart: () -> Unit,
+    onPause: () -> Unit,
+    onUnpause: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
@@ -319,6 +341,18 @@ private fun ContainerCard(
                 }
 
                 if (container.mappedState == ContainerState.RUNNING) {
+                    FilledTonalIconButton(onClick = onPause) {
+                        Icon(Icons.Default.Pause, contentDescription = "Pause")
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    FilledTonalIconButton(onClick = onStop) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop")
+                    }
+                } else if (container.mappedState == ContainerState.PAUSED) {
+                    FilledTonalIconButton(onClick = onUnpause) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Unpause")
+                    }
+                    Spacer(Modifier.width(6.dp))
                     FilledTonalIconButton(onClick = onStop) {
                         Icon(Icons.Default.Stop, contentDescription = "Stop")
                     }

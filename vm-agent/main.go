@@ -15,36 +15,49 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/droidhost/vm-agent/internal/api"
+	"github.com/droidhost/vm-agent/internal/dns"
 	"github.com/droidhost/vm-agent/internal/dockerapi"
 	"github.com/droidhost/vm-agent/internal/metrics"
 	"github.com/droidhost/vm-agent/internal/terminal"
 )
 
 func main() {
+	defaultShell := "/bin/sh"
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		defaultShell = "/bin/bash"
+	}
 	var (
 		addr        = flag.String("addr", envOr("VM_AGENT_ADDR", "0.0.0.0:8899"), "listen address")
-		token       = flag.String("token", os.Getenv("VM_AGENT_TOKEN"), "bearer token required for all requests")
+		tokenFlag   = flag.String("token", "", "bearer token required for all requests")
 		dockerHost  = flag.String("docker-host", envOr("DOCKER_HOST", "unix:///var/run/docker.sock"), "docker engine endpoint")
-		shell       = flag.String("shell", envOr("VM_AGENT_SHELL", "/bin/sh"), "shell used for PTY terminal sessions")
+		shell       = flag.String("shell", envOr("VM_AGENT_SHELL", defaultShell), "shell used for PTY terminal sessions")
 		startedAt   = time.Now()
-		readTimeout = 15 * time.Second
+		readTimeout = 60 * time.Second
 	)
 	flag.Parse()
 
-	if *token == "" {
-		log.Fatal("vm-agent: a bearer token is required (set --token or VM_AGENT_TOKEN); refusing to start unauthenticated")
+	token := resolveToken(*tokenFlag)
+	if token == "" {
+		log.Fatal("vm-agent: no bearer token provided; refusing to start unauthenticated (configure via QEMU fw_cfg, cmdline, /etc/droidhost/agent-token, or VM_AGENT_TOKEN)")
 	}
+
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
+
+	// Start built-in DNS-over-HTTPS (DoH) resolver on 127.0.0.1:53
+	go dns.StartDohProxy(appCtx)
 
 	docker := dockerapi.New(*dockerHost)
 	collector := metrics.NewCollector(startedAt)
 	term := terminal.NewServer(*shell)
 
 	server := api.NewServer(api.Config{
-		Token:     *token,
+		Token:     token,
 		Docker:    docker,
 		Metrics:   collector,
 		Terminal:  term,
@@ -58,7 +71,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("vm-agent: listening on %s (docker=%s shell=%s)", *addr, *dockerHost, *shell)
+		log.Printf("vm-agent: listening on %s (docker=%s, auth=bearer, token_len=%d)", *addr, *dockerHost, len(token))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("vm-agent: server error: %v", err)
 		}
@@ -74,6 +87,39 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("vm-agent: graceful shutdown failed: %v", err)
 	}
+}
+
+func resolveToken(flagVal string) string {
+	if flagVal = strings.TrimSpace(flagVal); flagVal != "" {
+		return flagVal
+	}
+	if envVal := strings.TrimSpace(os.Getenv("VM_AGENT_TOKEN")); envVal != "" {
+		return envVal
+	}
+	// QEMU fw_cfg injected value: -fw_cfg name=opt/droidhost/token,string=...
+	if fwData, err := os.ReadFile("/sys/firmware/qemu_fw_cfg/by_name/opt/droidhost/token/raw"); err == nil {
+		if t := strings.TrimSpace(string(fwData)); t != "" {
+			return t
+		}
+	}
+	// Kernel cmdline parameter: droidhost.token=<token>
+	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+		fields := strings.Fields(string(cmdline))
+		for _, f := range fields {
+			if strings.HasPrefix(f, "droidhost.token=") {
+				if t := strings.TrimSpace(strings.TrimPrefix(f, "droidhost.token=")); t != "" {
+					return t
+				}
+			}
+		}
+	}
+	// Token file in /etc/droidhost/agent-token
+	if fileData, err := os.ReadFile("/etc/droidhost/agent-token"); err == nil {
+		if t := strings.TrimSpace(string(fileData)); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func envOr(key, fallback string) string {

@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // Client talks to a Docker Engine endpoint.
@@ -36,7 +35,7 @@ func New(host string) *Client {
 		socket := strings.TrimPrefix(host, "unix://")
 		c.baseURL = "http://docker"
 		c.http = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 0,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
@@ -46,12 +45,12 @@ func New(host string) *Client {
 		}
 	case strings.HasPrefix(host, "tcp://"):
 		c.baseURL = "http://" + strings.TrimPrefix(host, "tcp://")
-		c.http = &http.Client{Timeout: 30 * time.Second}
+		c.http = &http.Client{Timeout: 0}
 	default:
 		// Fall back to treating the value as a unix socket path.
 		c.baseURL = "http://docker"
 		c.http = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 0,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
@@ -109,6 +108,30 @@ func (c *Client) post(ctx context.Context, path string, query url.Values) error 
 	}
 	defer resp.Body.Close()
 	return checkResponse(resp)
+}
+
+// postJSON performs a POST with a JSON body and parses JSON response into out.
+func (c *Client) postJSON(ctx context.Context, path string, query url.Values, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = strings.NewReader(string(data))
+	}
+	resp, err := c.do(ctx, http.MethodPost, path, query, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // delete performs a DELETE and discards the body, returning an error for non-2xx.

@@ -91,6 +91,14 @@ fun NetworkScreen(
             }
         }
 
+        // Network Diagnostics & Self-Test Card
+        item {
+            NetworkDiagnosticsCard(
+                state = state,
+                onRunDiagnostics = { viewModel.runNetworkDiagnostics() }
+            )
+        }
+
         // SSH Remote Access & Dynamic IP Solutions
         item {
             RemoteSshAccessCard(state = state, viewModel = viewModel)
@@ -224,7 +232,7 @@ private fun RemoteSshAccessCard(
                         )
                         Text(
                             when (state.remoteAccessMode) {
-                                RemoteAccessMode.TAILSCALE -> "Tailscale Mesh VPN (Fixed Static 100.x.y.z IP)"
+                                RemoteAccessMode.TAILSCALE -> "Stable private Tailscale address (100.x.y.z)"
                                 RemoteAccessMode.CLOUDFLARE -> "Cloudflare Tunnel (Public Custom Domain)"
                                 RemoteAccessMode.LOCAL_WIFI -> "Local Wi-Fi Network (LAN Only)"
                             },
@@ -242,7 +250,7 @@ private fun RemoteSshAccessCard(
                 }
             }
 
-            // 3-Way Provider Selector with Mutual Exclusivity
+            // Remote Access Provider Selector
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -270,7 +278,6 @@ private fun RemoteSshAccessCard(
                 )
             }
 
-            // Mutual Exclusivity Notice
             Row(
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -278,7 +285,7 @@ private fun RemoteSshAccessCard(
             ) {
                 Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
                 Text(
-                    "Strict Policy: Only one remote provider active at a time (Tailscale or Cloudflare).",
+                    "Select your preferred network access method (Tailscale private VPN, Cloudflare Tunnel, or local Wi-Fi).",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp
@@ -530,7 +537,7 @@ private fun TailscaleProviderSection(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                "Notice: Cloudflare Tunnel is deactivated while Tailscale Mesh VPN is selected.",
+                "Tip: Tailscale assigns a stable private 100.x.y.z address accessible across your devices.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
@@ -833,7 +840,7 @@ private fun CloudflareProviderSection(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                "Notice: Tailscale routing is paused while Cloudflare Tunnel is selected.",
+                "Tip: Cloudflare Tunnel provides public HTTPS access through your custom domain.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
@@ -1096,5 +1103,94 @@ private fun NetworkStatItem(label: String, value: String) {
     Column {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
+    }
+}
+
+@Composable
+fun NetworkDiagnosticsCard(
+    state: DashboardState,
+    onRunDiagnostics: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Network Diagnostics",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Verify guest interface, gateway, DNS & registry reachability",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = onRunDiagnostics,
+                    enabled = !state.isRunningDiagnostics
+                ) {
+                    if (state.isRunningDiagnostics) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = "Run Test")
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
+            val diag = state.networkDiagnostics
+            if (diag == null) {
+                Text(
+                    text = if (state.vmState == VmState.RUNNING) "Tap refresh to run network self-test" else "VM must be running to run network diagnostics",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                DiagnosticItem("Guest Interface (IPv4)", diag.interfaceUp, diag.guestAddress)
+                DiagnosticItem("Default Route", diag.defaultRoute)
+                DiagnosticItem("QEMU Gateway (10.0.2.2)", diag.gatewayReachable)
+                DiagnosticItem("Virtual DNS (10.0.2.3:53)", diag.dnsReachable)
+                DiagnosticItem("DNS Resolution (Public)", diag.dnsResolution)
+                DiagnosticItem("Internet Access (HTTPS)", diag.httpsReachable, diag.latencyMs?.let { "${it}ms" })
+                DiagnosticItem("Docker Registry (docker.io)", diag.dockerRegistryReachable)
+                DiagnosticItem("Docker Engine Daemon", diag.dockerPullTest)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticItem(label: String, passed: Boolean, extra: String? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (!extra.isNullOrBlank()) {
+                Text(extra, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(
+                if (passed) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                contentDescription = null,
+                tint = if (passed) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                if (passed) "PASSED" else "FAILED",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (passed) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error
+            )
+        }
     }
 }

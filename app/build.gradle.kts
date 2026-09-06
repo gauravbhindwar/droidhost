@@ -20,6 +20,9 @@ android {
         jniLibs.keepDebugSymbols += "**/libandroidx.graphics.path.so"
         jniLibs.useLegacyPackaging = true
     }
+    androidResources {
+        noCompress += listOf("dh", "img", "bin", "ext4", "part", "so")
+    }
     testOptions { unitTests.isReturnDefaultValues = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }

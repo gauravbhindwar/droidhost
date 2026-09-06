@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.droidhost.data.AgentRepository
 import com.droidhost.data.TerminalConnectionState
 import com.droidhost.data.TerminalRepository
+import com.droidhost.data.WebSocketTerminalRepository
 import com.droidhost.domain.*
 import com.droidhost.service.AssetValidationReport
 import com.droidhost.service.CloudflaredDownloader
@@ -51,6 +52,10 @@ data class DashboardState(
     // Terminal
     val terminalOutput: String = "",
     val terminalState: TerminalConnectionState = TerminalConnectionState.DISCONNECTED,
+    val terminalSessions: List<TerminalSessionTab> = listOf(
+        TerminalSessionTab(id = "1", title = "Terminal 1")
+    ),
+    val activeTerminalSessionId: String = "1",
     // Port forwarding & Remote access
     val portForwardRules: List<PortForwardRule> = listOf(
         PortForwardRule(id = "1", hostPort = 8000, guestPort = 8000, protocol = "tcp", enabled = true),
@@ -88,18 +93,31 @@ data class DashboardState(
     val showGlobalSearchDialog: Boolean = false,
     val catalogueFilter: CatalogueCategory = CatalogueCategory.ALL,
     val catalogueSearchQuery: String = "",
-    val installingCatalogueId: String? = null
+    val installingCatalogueId: String? = null,
+    // P2 Deployment & Compose & Storage
+    val deployProgress: DeployProgress = DeployProgress(),
+    val showDeployDialog: Boolean = false,
+    val composeProjects: List<ComposeProject> = emptyList(),
+    val storageBreakdown: StorageBreakdown = StorageBreakdown(),
+    val isPruning: Boolean = false,
+    val pruneMessage: String? = null,
+    val networkDiagnostics: NetworkDiagnostics? = null,
+    val isRunningDiagnostics: Boolean = false
 )
 
 class MainViewModel(
     private val repository: AgentRepository,
     private val vmManager: VmManager? = null,
     private val terminalRepository: TerminalRepository? = null,
+    private val tokenProvider: (() -> String)? = null,
     private val context: Context? = null
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _state.asStateFlow()
+
+    private val terminalRepos = mutableMapOf<String, TerminalRepository>()
+    private val terminalJobs = mutableMapOf<String, Pair<Job, Job>>()
 
     private var pollingJob: Job? = null
     private var statsJob: Job? = null
@@ -388,25 +406,57 @@ class MainViewModel(
     }
 
     private fun observeTerminal() {
-        if (terminalRepository == null) return
-        viewModelScope.launch {
-            terminalRepository.connectionState.collect { tState ->
-                _state.value = _state.value.copy(terminalState = tState)
+        getOrCreateTerminalRepo("1", "Terminal 1")
+    }
+
+    private fun getOrCreateTerminalRepo(id: String, title: String): TerminalRepository {
+        terminalRepos[id]?.let { return it }
+        val repo = if (id == "1" && terminalRepository != null) {
+            terminalRepository
+        } else {
+            WebSocketTerminalRepository(
+                wsUrl = "ws://127.0.0.1:8899/v1/terminal",
+                sessionId = id,
+                tokenProvider = tokenProvider
+            )
+        }
+        terminalRepos[id] = repo
+
+        val stateJob = viewModelScope.launch {
+            repo.connectionState.collect { tState ->
+                val updated = _state.value.terminalSessions.map {
+                    if (it.id == id) it.copy(state = tState) else it
+                }
+                _state.value = _state.value.copy(
+                    terminalSessions = updated,
+                    terminalState = if (_state.value.activeTerminalSessionId == id) tState else _state.value.terminalState
+                )
             }
         }
 
-        viewModelScope.launch {
-            terminalRepository.output.collect { chunk ->
-                if (chunk.contains("\u001b[2J") || chunk.contains("\u001bc")) {
-                    val remaining = chunk.substringAfterLast("\u001b[H").substringAfterLast("\u001bc").substringAfterLast("\u001b[2J")
-                    _state.value = _state.value.copy(terminalOutput = remaining.ifEmpty { "droidhost:~$ " })
-                } else {
-                    val current = _state.value.terminalOutput
-                    val next = if (current.length > 50000) current.takeLast(30000) + chunk else current + chunk
-                    _state.value = _state.value.copy(terminalOutput = next)
+        val outJob = viewModelScope.launch {
+            repo.output.collect { chunk ->
+                val updated = _state.value.terminalSessions.map { tab ->
+                    if (tab.id == id) {
+                        val newOut = if (chunk.contains("\u001b[2J") || chunk.contains("\u001bc")) {
+                            chunk.substringAfterLast("\u001b[H").substringAfterLast("\u001bc").substringAfterLast("\u001b[2J").ifEmpty { "droidhost:~$ " }
+                        } else {
+                            val cur = tab.output
+                            if (cur.length > 50000) cur.takeLast(30000) + chunk else cur + chunk
+                        }
+                        tab.copy(output = newOut)
+                    } else tab
                 }
+                val activeTab = updated.find { it.id == _state.value.activeTerminalSessionId }
+                _state.value = _state.value.copy(
+                    terminalSessions = updated,
+                    terminalOutput = activeTab?.output ?: _state.value.terminalOutput
+                )
             }
         }
+
+        terminalJobs[id] = Pair(stateJob, outJob)
+        return repo
     }
 
     private fun startPolling() {
@@ -464,14 +514,23 @@ class MainViewModel(
         }
     }
 
+    fun runNetworkDiagnostics() = viewModelScope.launch {
+        _state.value = _state.value.copy(isRunningDiagnostics = true)
+        val diag = repository.networkDiagnostics()
+        _state.value = _state.value.copy(
+            networkDiagnostics = diag,
+            isRunningDiagnostics = false
+        )
+    }
+
     fun startVm(force: Boolean = false) {
-        if (!force && _state.value.isBatteryOptimized && !_state.value.hasDismissedBatteryDialog) {
-            pendingVmStart = true
-            _state.value = _state.value.copy(showBatteryOptimizationDialog = true)
-            return
-        }
-        pendingVmStart = false
         if (vmManager != null) {
+            val report = vmManager.validateAssets()
+            if (!report.valid) {
+                // If assets are missing on fresh install or clear data, run automated pre-setup with progress and then boot
+                runPreSetupAndStart()
+                return
+            }
             vmManager.start(_state.value.vmConfig)
         } else {
             _state.value = _state.value.copy(vmState = VmState.STARTING)
@@ -500,6 +559,148 @@ class MainViewModel(
             refresh()
         }.onFailure {
             _state.value = _state.value.copy(error = it.message ?: "Failed to perform $action on container")
+        }
+    }
+
+    fun pauseContainer(id: String) = viewModelScope.launch {
+        runCatching {
+            repository.pauseContainer(id)
+            refresh()
+        }.onFailure {
+            _state.value = _state.value.copy(error = it.message ?: "Failed to pause container")
+        }
+    }
+
+    fun unpauseContainer(id: String) = viewModelScope.launch {
+        runCatching {
+            repository.unpauseContainer(id)
+            refresh()
+        }.onFailure {
+            _state.value = _state.value.copy(error = it.message ?: "Failed to unpause container")
+        }
+    }
+
+    fun openDeployDialog() {
+        _state.value = _state.value.copy(showDeployDialog = true, deployProgress = DeployProgress())
+    }
+
+    fun closeDeployDialog() {
+        _state.value = _state.value.copy(showDeployDialog = false, deployProgress = DeployProgress())
+    }
+
+    fun deploySingleContainer(spec: ContainerDeploySpec) = viewModelScope.launch {
+        _state.value = _state.value.copy(
+            deployProgress = DeployProgress(step = DeployStep.VALIDATING, message = "Validating port mappings and parameters...")
+        )
+        delay(300)
+
+        // Port conflict check locally first
+        if (spec.hostPort > 0) {
+            val conflict = _state.value.containers.any { c -> c.ports.any { it.publicPort == spec.hostPort } }
+            if (conflict) {
+                _state.value = _state.value.copy(
+                    deployProgress = DeployProgress(
+                        step = DeployStep.FAILED,
+                        message = "Port conflict: Host port ${spec.hostPort} is already in use by an existing container."
+                    )
+                )
+                return@launch
+            }
+        }
+
+        _state.value = _state.value.copy(
+            deployProgress = DeployProgress(step = DeployStep.PULLING, message = "Pulling image ${spec.image} from registry...")
+        )
+
+        try {
+            _state.value = _state.value.copy(
+                deployProgress = DeployProgress(step = DeployStep.CREATING, message = "Creating container '${spec.name.ifBlank { spec.image }}'...")
+            )
+            val result = repository.deployContainer(spec)
+            _state.value = _state.value.copy(
+                deployProgress = DeployProgress(
+                    step = DeployStep.RUNNING,
+                    message = "Container '${result.name}' deployed and running!",
+                    containerId = result.id
+                )
+            )
+            refresh()
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                deployProgress = DeployProgress(step = DeployStep.FAILED, message = e.message ?: "Deployment failed")
+            )
+        }
+    }
+
+    fun deployComposeProject(name: String, yaml: String) = viewModelScope.launch {
+        _state.value = _state.value.copy(
+            deployProgress = DeployProgress(step = DeployStep.VALIDATING, message = "Validating Docker Compose YAML syntax...")
+        )
+        delay(300)
+        _state.value = _state.value.copy(
+            deployProgress = DeployProgress(step = DeployStep.STARTING, message = "Executing docker compose up -d for '$name'...")
+        )
+        try {
+            val proj = repository.deployCompose(name, yaml)
+            _state.value = _state.value.copy(
+                deployProgress = DeployProgress(step = DeployStep.RUNNING, message = "Compose project '${proj.name}' deployed (${proj.services.size} services active)!")
+            )
+            refresh()
+            loadComposeProjects()
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                deployProgress = DeployProgress(step = DeployStep.FAILED, message = e.message ?: "Compose deployment failed")
+            )
+        }
+    }
+
+    fun loadComposeProjects() = viewModelScope.launch {
+        runCatching {
+            val projs = repository.composeProjects()
+            _state.value = _state.value.copy(composeProjects = projs)
+        }
+    }
+
+    fun downCompose(name: String) = viewModelScope.launch {
+        runCatching {
+            repository.downCompose(name)
+            refresh()
+            loadComposeProjects()
+        }.onFailure {
+            _state.value = _state.value.copy(error = it.message ?: "Failed to down compose project")
+        }
+    }
+
+    fun loadStorageBreakdown() = viewModelScope.launch {
+        runCatching {
+            val df = repository.systemDf()
+            val stat = StatFs(Environment.getDataDirectory().path)
+            val totalBytes = stat.totalBytes
+            val availBytes = stat.availableBytes
+            val completeBreakdown = df.copy(
+                androidTotalBytes = totalBytes,
+                androidAvailableBytes = availBytes
+            )
+            _state.value = _state.value.copy(storageBreakdown = completeBreakdown)
+        }
+    }
+
+    fun prune(type: PruneType) = viewModelScope.launch {
+        _state.value = _state.value.copy(isPruning = true, pruneMessage = "Pruning ${type.name.lowercase()}...")
+        try {
+            val res = repository.pruneSystem(type)
+            val reclaimedMb = res.spaceReclaimed / (1024 * 1024)
+            _state.value = _state.value.copy(
+                isPruning = false,
+                pruneMessage = "Cleaned: ${res.imagesDeleted} images, ${res.containersDeleted} containers, ${res.volumesDeleted} volumes ($reclaimedMb MB reclaimed)."
+            )
+            refresh()
+            loadStorageBreakdown()
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                isPruning = false,
+                pruneMessage = "Prune failed: ${e.message}"
+            )
         }
     }
 
@@ -569,13 +770,18 @@ class MainViewModel(
         )
     }
 
+    private fun activeTerminalRepo(): TerminalRepository? {
+        val activeId = _state.value.activeTerminalSessionId
+        return terminalRepos[activeId] ?: terminalRepository
+    }
+
     // Terminal
     fun terminalConnect() {
-        terminalRepository?.connect()
+        activeTerminalRepo()?.connect()
     }
 
     fun terminalDisconnect() {
-        terminalRepository?.disconnect()
+        activeTerminalRepo()?.disconnect()
     }
 
     fun terminalSend(command: String) {
@@ -584,15 +790,91 @@ class MainViewModel(
         if (firstToken in listOf("clear", "cls", "clea", "clr")) {
             terminalClear()
         }
-        terminalRepository?.send(command)
+        activeTerminalRepo()?.send(command)
     }
 
     fun terminalSendBytes(bytes: ByteArray) {
-        terminalRepository?.sendBytes(bytes)
+        activeTerminalRepo()?.sendBytes(bytes)
     }
 
     fun terminalClear() {
-        _state.value = _state.value.copy(terminalOutput = "droidhost:~$ ")
+        val activeId = _state.value.activeTerminalSessionId
+        val updated = _state.value.terminalSessions.map {
+            if (it.id == activeId) it.copy(output = "droidhost:~$ ") else it
+        }
+        _state.value = _state.value.copy(
+            terminalSessions = updated,
+            terminalOutput = "droidhost:~$ "
+        )
+    }
+
+    fun selectTerminalTab(id: String) {
+        val target = _state.value.terminalSessions.find { it.id == id } ?: return
+        _state.value = _state.value.copy(
+            activeTerminalSessionId = id,
+            terminalOutput = target.output,
+            terminalState = target.state
+        )
+        val repo = getOrCreateTerminalRepo(id, target.title)
+        if (target.state != TerminalConnectionState.CONNECTED && target.state != TerminalConnectionState.CONNECTING) {
+            repo.connect()
+        }
+    }
+
+    fun createNewTerminalTab(title: String? = null) {
+        viewModelScope.launch {
+            val current = _state.value.terminalSessions
+            val nextNum = (current.mapNotNull { it.id.toIntOrNull() }.maxOrNull() ?: 0) + 1
+            val newId = nextNum.toString()
+            val newTitle = title ?: "Terminal $newId"
+
+            try {
+                repository.createTerminalSession(newId, newTitle)
+            } catch (_: Exception) {}
+
+            val newTab = TerminalSessionTab(id = newId, title = newTitle)
+            _state.value = _state.value.copy(
+                terminalSessions = current + newTab
+            )
+            selectTerminalTab(newId)
+        }
+    }
+
+    fun closeTerminalTab(id: String) {
+        viewModelScope.launch {
+            val current = _state.value.terminalSessions
+            if (current.size <= 1) {
+                terminalClear()
+                return@launch
+            }
+
+            try {
+                repository.closeTerminalSession(id)
+            } catch (_: Exception) {}
+
+            terminalJobs[id]?.let { (sJob, oJob) ->
+                sJob.cancel()
+                oJob.cancel()
+            }
+            terminalJobs.remove(id)
+            terminalRepos[id]?.disconnect()
+            terminalRepos.remove(id)
+
+            val remaining = current.filterNot { it.id == id }
+            val nextActiveId = if (_state.value.activeTerminalSessionId == id) {
+                remaining.first().id
+            } else {
+                _state.value.activeTerminalSessionId
+            }
+            val activeTab = remaining.find { it.id == nextActiveId }
+            _state.value = _state.value.copy(
+                terminalSessions = remaining,
+                activeTerminalSessionId = nextActiveId,
+                terminalOutput = activeTab?.output.orEmpty(),
+                terminalState = activeTab?.state ?: TerminalConnectionState.DISCONNECTED
+            )
+            getOrCreateTerminalRepo(nextActiveId, activeTab?.title ?: "Terminal $nextActiveId").connect()
+        }
     }
 
     // Port Forwarding
@@ -621,8 +903,49 @@ class MainViewModel(
         )
     }
 
-    // Settings
+    fun dismissError() {
+        _state.value = _state.value.copy(error = null, vmError = null)
+    }
+
+    // Settings & Server Profiles
+    fun applyServerProfile(profile: ServerProfile, autoStart: Boolean) {
+        val oldDisk = _state.value.vmConfig.diskGb
+        val newConfig = VmConfiguration(
+            cpuCores = profile.cpuCores,
+            ramMb = profile.memoryMb,
+            diskGb = profile.diskGb,
+            autoStart = autoStart
+        )
+        val validation = validateVmConfiguration(newConfig, _state.value.deviceResources)
+        _state.value = _state.value.copy(
+            vmConfig = newConfig,
+            configValidation = validation
+        )
+
+        if (context != null) {
+            context.getSharedPreferences("droidhost_settings", Context.MODE_PRIVATE)
+                .edit()
+                .putInt("vm_cpu", profile.cpuCores)
+                .putInt("vm_ram", profile.memoryMb)
+                .putInt("vm_disk", profile.diskGb)
+                .putBoolean("vm_auto_start", autoStart)
+                .apply()
+        }
+
+        vmManager?.saveServerProfile(profile)
+
+        // If disk size increased, dynamically grow the sparse virtual disk
+        if (profile.diskGb > oldDisk && vmManager != null) {
+            vmManager.growDisk(profile.diskGb)
+        }
+
+        if (autoStart) {
+            startVm()
+        }
+    }
+
     fun updateVmConfiguration(cpu: Int, ramMb: Int, diskGb: Int, autoStart: Boolean) {
+        val oldDisk = _state.value.vmConfig.diskGb
         val newConfig = VmConfiguration(cpuCores = cpu, ramMb = ramMb, diskGb = diskGb, autoStart = autoStart)
         val validation = validateVmConfiguration(newConfig, _state.value.deviceResources)
         _state.value = _state.value.copy(
@@ -638,6 +961,20 @@ class MainViewModel(
                 .putInt("vm_disk", diskGb)
                 .putBoolean("vm_auto_start", autoStart)
                 .apply()
+        }
+
+        // Save server profile
+        val profile = ServerProfile(
+            name = "Custom",
+            cpuCores = cpu,
+            memoryMb = ramMb,
+            diskGb = diskGb
+        )
+        vmManager?.saveServerProfile(profile)
+
+        // If disk size increased, dynamically grow the sparse virtual disk
+        if (diskGb > oldDisk && vmManager != null) {
+            vmManager.growDisk(diskGb)
         }
     }
 
@@ -664,6 +1001,47 @@ class MainViewModel(
                 )
                 if (report.valid && _state.value.vmState == VmState.FAILED) {
                     _state.value = _state.value.copy(vmState = VmState.STOPPED)
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: "Pre-setup failed"
+                _state.value = _state.value.copy(
+                    isProvisioning = false,
+                    provisioningStatus = null,
+                    error = msg,
+                    vmError = msg
+                )
+            }
+        }
+    }
+
+    fun runPreSetupAndStart(profile: ServerProfile? = null) {
+        if (vmManager == null) return
+        viewModelScope.launch {
+            if (profile != null) {
+                applyServerProfile(profile, autoStart = false)
+            }
+            _state.value = _state.value.copy(
+                isProvisioning = true,
+                provisioningStatus = "Initializing VM environment...",
+                error = null,
+                vmError = null
+            )
+            try {
+                val report = vmManager.generatePreSetup(_state.value.vmConfig.diskGb) { status ->
+                    _state.value = _state.value.copy(provisioningStatus = status)
+                }
+                _state.value = _state.value.copy(
+                    assetReport = report,
+                    vmError = if (report.valid) null else report.errorMessage,
+                    error = null,
+                    isProvisioning = false,
+                    provisioningStatus = if (report.valid) "VM environment ready!" else null
+                )
+                if (report.valid) {
+                    if (_state.value.vmState == VmState.FAILED) {
+                        _state.value = _state.value.copy(vmState = VmState.STOPPED)
+                    }
+                    startVm(force = true)
                 }
             } catch (e: Exception) {
                 val msg = e.message ?: "Pre-setup failed"

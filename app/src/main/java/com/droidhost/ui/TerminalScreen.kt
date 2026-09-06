@@ -165,6 +165,70 @@ fun TerminalScreen(
             .imePadding()
             .padding(12.dp)
     ) {
+        // ── Multi-Terminal Session Tabs ──────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            state.terminalSessions.forEach { tab ->
+                val isSelected = tab.id == state.activeTerminalSessionId
+                val tabIndicatorColor = when (tab.state) {
+                    TerminalConnectionState.CONNECTED -> Color(0xFF2A9D8F)
+                    TerminalConnectionState.CONNECTING -> Color(0xFFE9C46A)
+                    TerminalConnectionState.DISCONNECTED -> Color.Gray
+                    TerminalConnectionState.ERROR -> Color(0xFFE76F51)
+                }
+
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { viewModel.selectTerminalTab(tab.id) },
+                    label = { Text(tab.title, style = MaterialTheme.typography.labelMedium) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Circle,
+                            contentDescription = null,
+                            modifier = Modifier.size(8.dp),
+                            tint = tabIndicatorColor
+                        )
+                    },
+                    trailingIcon = if (state.terminalSessions.size > 1) {
+                        {
+                            IconButton(
+                                onClick = { viewModel.closeTerminalTab(tab.id) },
+                                modifier = Modifier.size(16.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Close tab",
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    } else null,
+                    modifier = Modifier.padding(end = 6.dp)
+                )
+            }
+
+            IconButton(
+                onClick = { viewModel.createNewTerminalTab() },
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "New Terminal",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
         // ── Status & Control Bar ─────────────────────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -173,15 +237,15 @@ fun TerminalScreen(
         ) {
             // Left: connection status chip
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val (statusText, statusColor) = when (state.terminalState) {
-                    TerminalConnectionState.CONNECTED    -> "CONNECTED"    to Color(0xFF2A9D8F)
-                    TerminalConnectionState.CONNECTING   -> "CONNECTING"   to Color(0xFFE9C46A)
-                    TerminalConnectionState.DISCONNECTED -> "DISCONNECTED" to Color.Gray
-                    TerminalConnectionState.ERROR        -> "ERROR"        to Color(0xFFE76F51)
+                val (statusSymbol, statusText, statusColor) = when (state.terminalState) {
+                    TerminalConnectionState.CONNECTED    -> Triple("●", "Connected", Color(0xFF2A9D8F))
+                    TerminalConnectionState.CONNECTING   -> Triple("○", "Reconnecting", Color(0xFFE9C46A))
+                    TerminalConnectionState.DISCONNECTED -> Triple("×", "Disconnected", Color.Gray)
+                    TerminalConnectionState.ERROR        -> Triple("×", "Disconnected", Color(0xFFE76F51))
                 }
                 AssistChip(
                     onClick = {},
-                    label = { Text(statusText, style = MaterialTheme.typography.labelSmall) },
+                    label = { Text("$statusSymbol $statusText", style = MaterialTheme.typography.labelSmall) },
                     leadingIcon = {
                         Icon(
                             Icons.Default.Circle,

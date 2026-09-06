@@ -56,33 +56,122 @@ fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(vertical = 14.dp)
     ) {
-        // Compact Provisioning Bar
+        // Live VM Setup & Download Progress Card
         if (state.isProvisioning) {
             item {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f))
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    "Preparing VM Environment...",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+
+                        val statusText = state.provisioningStatus ?: "Initializing..."
+                        val percentMatch = Regex("(\\d+)%").find(statusText)
+                        val percentValue = percentMatch?.groupValues?.get(1)?.toFloatOrNull()?.div(100f)
+
+                        if (percentValue != null) {
+                            LinearProgressIndicator(
+                                progress = { percentValue },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                            )
+                        }
+
                         Text(
-                            state.provisioningStatus ?: "Installing VM Bundle...",
+                            statusText,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                         )
                     }
                 }
             }
         }
 
-        // Compact Error / Warning Banner
+        // Initial Setup Required Card (only when assets missing)
+        val assetsMissing = state.assetReport != null && !state.assetReport.valid && !state.isProvisioning
+        if (assetsMissing) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.SettingsSuggest,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Initial VM Setup Required",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "ARM64 Linux runtime needs to be initialized on this phone.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = { showPreSetupDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("1-Tap Quick Setup (Automatic)")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Compact Error / Warning Banner (only show when not actively running/online and not missing assets card)
         val activeError = state.vmError ?: state.error
-        if (activeError != null && !state.isProvisioning) {
+        if (activeError != null && !state.isProvisioning && !assetsMissing && (state.vmState != VmState.RUNNING || !state.metrics.online)) {
             item {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
@@ -107,11 +196,19 @@ fun DashboardScreen(
                                 maxLines = 2
                             )
                         }
-                        TextButton(
-                            onClick = { showPreSetupDialog = true },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("Resolve", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { showPreSetupDialog = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("Resolve", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                            }
+                            IconButton(
+                                onClick = { viewModel.dismissError() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                            }
                         }
                     }
                 }
@@ -262,12 +359,13 @@ fun DashboardScreen(
     if (showPreSetupDialog) {
         PreSetupDialog(
             diskSizeGb = state.vmConfig.diskGb,
+            deviceResources = state.deviceResources,
             existingCloudflareToken = state.cloudflareToken,
             onDismiss = { showPreSetupDialog = false },
-            onStartPreSetup = { token ->
+            onStartPreSetup = { profile, token ->
                 showPreSetupDialog = false
                 if (token.isNotBlank()) viewModel.saveCloudflareToken(token)
-                viewModel.runPreSetup()
+                viewModel.runPreSetupAndStart(profile)
             }
         )
     }

@@ -23,6 +23,7 @@ enum class TerminalConnectionState {
 }
 
 interface TerminalRepository {
+    val sessionId: String get() = "1"
     val connectionState: StateFlow<TerminalConnectionState>
     val output: SharedFlow<String>
     fun connect()
@@ -33,7 +34,9 @@ interface TerminalRepository {
 
 class WebSocketTerminalRepository(
     private val wsUrl: String,
-    private val token: String
+    override val sessionId: String = "1",
+    private val token: String = "",
+    private val tokenProvider: (() -> String)? = null
 ) : TerminalRepository {
 
     private val client = OkHttpClient.Builder()
@@ -66,9 +69,19 @@ class WebSocketTerminalRepository(
 
         _connectionState.value = TerminalConnectionState.CONNECTING
 
+        val effectiveToken = tokenProvider?.invoke()?.trim()?.ifEmpty { null } ?: token.trim()
+
+        val fullUrl = if (wsUrl.contains("session=")) wsUrl else {
+            if (wsUrl.contains("?")) "$wsUrl&session=$sessionId" else "$wsUrl?session=$sessionId"
+        }
+
         val request = Request.Builder()
-            .url(wsUrl)
-            .addHeader("Authorization", "Bearer $token")
+            .url(fullUrl)
+            .apply {
+                if (effectiveToken.isNotEmpty()) {
+                    addHeader("Authorization", "Bearer $effectiveToken")
+                }
+            }
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

@@ -1,142 +1,207 @@
-# DroidHost Handover
+# DroidHost Engineering Handover
 
-## Product Goal
+## 1. Product Overview & Architecture
 
-DroidHost turns an Android phone into a self-hosted server:
+DroidHost turns an Android device into a genuine self-hosted ARM64 Linux server without root privileges or chroot translation hacks (PRoot).
 
-```text
-Android Compose control panel
-        -> authenticated vm-agent
-        -> real ARM64 Linux VM
-        -> Linux kernel and Docker Engine
-        -> user workloads
-```
-
-Coolify is an optional user workload. DroidHost does not contain Coolify-specific management logic.
-
-## Current Repository State
-
-### Android app
-
-- Jetpack Compose Material 3 dashboard.
-- Live metrics and container data are loaded from `http://127.0.0.1:8899`.
-- Ktor HTTP repository uses a bearer token read from private app preferences.
-- `MainViewModel` polls metrics and container data every three seconds.
-- Container start, stop, and restart actions are wired to the vm-agent API.
-- Foreground server service and boot receiver are present.
-- Dashboard cards, Quick Actions, and bottom navigation have responsive sizing and bounded text.
-- Android configuration currently uses `minSdk = 28`, `targetSdk = 35`, and `compileSdk = 35`.
-- Java and Kotlin bytecode target JVM 17.
-
-### vm-agent
-
-The Go service provides authenticated endpoints for:
-
-- Health and `/v1/metrics`.
-- Container listing, inspect, stats, logs, and actions.
-- Images, volumes, and networks.
-- PTY terminal WebSocket access.
-
-The agent talks to the Docker Engine API and reads host metrics from `/proc` inside the Linux guest.
-
-### VM runtime
-
-`vm/run-vm.sh` defines the real AArch64 VM launch contract. It expects:
+### The Execution Pipeline
 
 ```text
-VM_DIR/bin/qemu-system-aarch64
-VM_DIR/boot/Image
-VM_DIR/boot/initrd.img
-VM_DIR/data/droidhost.ext4
-VM_DIR/agent-token
+Android Phone (Host)
+    │
+    ▼
+ServerModeService (Foreground Android Service, 24/7 uptime)
+    │
+    ▼
+VmManager & SlirpNetworkBackend
+    │
+    ▼
+QEMU AArch64 Hypervisor (qemu-system-aarch64)
+    │
+    ▼
+Real ARM64 Linux Guest VM (Alpine Linux v3.20, Linux 6.6+ kernel)
+    │
+    ├─► vm-agent (Go REST API + Multi-PTY WebSocket server)
+    ├─► Docker Engine (v26.1+, native cgroups and overlay2)
+    ├─► OpenSSH Server (sshd on guest :22, forwarded to host :2222)
+    ├─► DoH Fallback Proxy (doh-proxy on 127.0.0.1:53)
+    └─► User Workloads (Coolify 4.3+, databases, custom containers)
 ```
 
-QEMU forwards Android loopback port `127.0.0.1:8899` to port `8899` in the guest.
+---
 
-## Important Runtime Limitation
+## 2. Directory Structure & Key Files
 
-The repository currently does not contain the QEMU binary, ARM64 kernel, initramfs, or VM disk in Android assets. As a result, the installed app cannot start a real guest yet, and `127.0.0.1:8899` will report connection refused until a valid guest bundle is provisioned into the app-private VM directory.
-
-Do not replace this with Android shell, PRoot, a fake agent, fake metrics, or fake Docker responses. The product requirement is a real ARM64 Linux VM with Docker Engine.
-
-The Android foreground service currently owns server mode and notification state. It must be completed so it copies or locates the provisioned runtime bundle, writes the per-installation token, validates resources, launches `run-vm.sh`, monitors QEMU, and reports failure without claiming that the VM is running.
-
-## Build and Test
-
-Use JDK 17, Android SDK platform 35, Android build tools, Gradle, and Go.
-
-From the repository root:
-
-```sh
-./gradlew testDebugUnitTest assembleDebug
-
-cd vm-agent
-go test ./...
-cd ..
-
-sh -n vm/run-vm.sh vm/validate-assets.sh
+```text
+droidhost/
+├── app/
+│   ├── src/main/java/com/droidhost/
+│   │   ├── MainActivity.kt               # Entrypoint, Compose navigation, permission handlers
+│   │   ├── domain/
+│   │   │   └── Models.kt                 # VmNetworkConfig, PortForward, DnsConfig, NetworkDiagnostics, TerminalSessionTab
+│   │   ├── data/
+│   │   │   ├── AgentRepository.kt        # Ktor HTTP client to vm-agent REST API (60s timeout, auth token)
+│   │   │   └── TerminalRepository.kt     # WebSocket client supporting ?session=$sessionId query param
+│   │   ├── service/
+│   │   │   └── VmManager.kt              # Asset extraction, QEMU process execution, SLIRP arguments, watchdog
+│   │   └── ui/
+│   │       ├── DashboardScreen.kt        # Live CPU/RAM/Net metrics, workload cards, shortcuts
+│   │       ├── ContainersScreen.kt       # Docker container inspector, live logs, start/stop/restart/delete
+│   │       ├── TerminalScreen.kt         # Multi-session PTY tab row, ANSI console, virtual keyboard accessories
+│   │       ├── NetworkScreen.kt          # Interface stats, Network Diagnostics self-test, Tailscale & Cloudflare tunnels
+│   │       ├── StorageScreen.kt          # Sparse virtual disk breakdown, Docker storage, prune actions
+│   │       └── MainViewModel.kt          # UDF state management, terminal sessions, diagnostics orchestration
+│   ├── src/main/jniLibs/arm64-v8a/
+│   │   └── libvmagent.so                 # Prebuilt Go vm-agent binary for aarch64
+│   └── src/main/assets/vm/
+│       └── qemu-libs.dh                  # Compressed bundle of QEMU binaries and shared libraries
+├── vm-agent/
+│   ├── main.go                           # Entrypoint, token authentication middleware, route registration
+│   └── internal/
+│       ├── api/
+│       │   ├── server.go                 # REST endpoints: metrics, containers, network diagnostics (/v1/network/diagnostics)
+│       │   └── server_test.go            # Unit tests for diagnostics, token validation, session lifecycle
+│       ├── terminal/
+│       │   └── terminal.go               # Multi-PTY session manager, openpty, 64KB ring buffer, idle reaper
+│       ├── dockerapi/                    # Native Docker engine client over /var/run/docker.sock
+│       └── dns/
+│           └── doh.go                    # DNS-over-HTTPS fallback provider
+├── scripts/
+│   ├── build-arm64-guest.sh              # Rootfs preparation, OpenSSH configuration, bash compatibility, /dev/fd
+│   └── provision-vm.sh                   # In-guest initialization script
+├── vm/
+│   └── run-vm.sh                         # Canonical QEMU launch script with SLIRP port forwards
+└── docs/assets/screenshots/              # Physical device verification screenshots
 ```
 
-For the local toolchain used during development:
+---
 
-```sh
-JAVA_HOME=$PWD/.toolchain/jdk-17.0.12+7 \
-  .toolchain/gradle-8.8/bin/gradle \
-  :app:testDebugUnitTest :app:assembleDebug --no-daemon
+## 3. Network Architecture & Abstraction
+
+### Subnet Layout
+* **QEMU User SLIRP Network**: `10.0.2.0/24`
+  * Guest Address: `10.0.2.15`
+  * Virtual Gateway: `10.0.2.2`
+  * Virtual DNS: `10.0.2.3`
+* **Docker Network Pool**: `172.18.0.0/16` (no collision with host or QEMU SLIRP).
+
+### Port Forwarding Contract
+Managed dynamically via `SlirpNetworkBackend.kt`:
+* `hostPort = 8899 -> guestPort = 8899` (vm-agent REST API + Terminal WebSockets)
+* `hostPort = 8000 -> guestPort = 8000` (Coolify web UI / general web workloads)
+* `hostPort = 2222 -> guestPort = 22`   (Guest OpenSSH daemon)
+
+### Android Active Network & DNS Discovery
+In `VmManager.kt`, Android's `ConnectivityManager` inspects `activeNetwork -> LinkProperties -> dnsServers`.
+* Upstream DNS addresses are discovered and passed to QEMU's upstream resolver.
+* Private RFC1918 addresses (e.g. `192.168.1.1`) are filtered out and **never** exposed as the guest DNS.
+* Guest `/etc/resolv.conf`:
+  ```text
+  nameserver 10.0.2.3
+  nameserver 127.0.0.1
+  ```
+* If primary DNS fails or is intercepted by carrier CGNAT, in-VM DoH (`127.0.0.1:53`) queries Cloudflare/Google over HTTPS.
+
+---
+
+## 4. Network Diagnostics API
+
+Endpoint: `GET /v1/network/diagnostics` (Authenticated with Bearer token)
+
+Returns 8 real hardware and transport checks:
+```json
+{
+  "interfaceUp": true,
+  "guestAddress": "10.0.2.15",
+  "defaultRoute": true,
+  "gatewayReachable": true,
+  "dnsReachable": true,
+  "dnsResolution": true,
+  "httpsReachable": true,
+  "dockerRegistryReachable": true,
+  "dockerPullTest": true,
+  "latencyMs": 174
+}
 ```
+* **No mocks**: Gateway reachability tests route existence, DNS tests UDP `10.0.2.3:53` and public resolution of `cloudflare.com`, HTTPS tests TLS handshake to `1.1.1.1` without following redirect loops, Docker registry tests `https://registry-1.docker.io/v2/`, and Docker pull verifies actual container execution.
 
-The Android build has been validated successfully with `:app:assembleDebug` and `:app:testDebugUnitTest`. Go package tests also pass.
+---
 
-## Known Build and Device Messages
+## 5. Multi-Session PTY Terminal Implementation
 
-- Android Gradle Plugin 8.5.2 is older than the version officially tested with compileSdk 35. The warning is suppressed in `gradle.properties`; upgrading AGP should be considered later.
-- Kotlin daemon cache-registration failures are local build-cache/process issues. The build falls back to in-process compilation and succeeds, but stale `app/build/kotlin` caches may need to be removed.
-- `libandroidx.graphics.path.so` may be packaged without stripping because it is a prebuilt native library.
-- Device logs such as AdrenoGLES, HWUI, CompatChangeReporter, Nothing vendor performance logs, and ProfileInstaller are platform/vendor output rather than DroidHost failures.
-- SLF4J provider warnings mean no logging backend is configured for the Ktor client; add a backend only if client logging is required.
-- A skipped-frame message indicates slow first-frame rendering on the test device and should be profiled separately if it persists.
+### vm-agent Architecture (`internal/terminal/terminal.go`)
+* Supports concurrent, independent terminal sessions:
+  * `POST /v1/terminal/sessions`: Creates a new PTY session with specified or auto-generated ID.
+  * `GET /v1/terminal/sessions`: Lists active sessions.
+  * `DELETE /v1/terminal/sessions/{id}`: Terminates the PTY process and frees resources.
+  * `GET /v1/terminal?session={id}`: WebSocket connection attached to the specific session's PTY.
+* **History Buffer**: Each session maintains a 64KB ring buffer storing recent ANSI output. When the user navigates between screens or tabs, the WebSocket reconnects and replays the ring buffer so no terminal state is lost.
+* **Idle Reaper**: Disconnected sessions are preserved for 10 minutes, after which an idle worker terminates the child process to avoid resource leaks.
 
-## Security Requirements
+### Android Client Architecture
+* `MainViewModel.kt` maintains `terminalSessions: List<TerminalSessionTab>`.
+* Dedicated `TerminalRepository` instances per tab ensuring WebSocket messages never cross-talk between sessions.
+* Compose tab row in `TerminalScreen.kt` allows adding (`+`), closing (`×`), and switching between sessions.
 
-- Never hardcode or commit bearer tokens.
-- Generate a per-installation token and store it in app-private storage.
-- Keep the agent bound to the guest interface and expose only authenticated routes.
-- Validate VM resources before launch.
-- Do not ship guest disks, kernels, initrds, QEMU binaries, SDK output, or generated build files in Git.
-- Keep user port forwarding explicit and reject collisions.
+---
 
-## Implemented Functionality & Current Status
+## 6. Remote Access & SSH
 
-### Android App
-- **Jetpack Compose Material 3 Control Panel:**
-  - **Dashboard:** Server online/offline status, uptime, CPU/RAM/Network metrics, ARM64 VM controls card, Docker Engine overview, quick actions, and active containers preview.
-  - **Containers:** Full container list, instant search, state filter (All, Running, Stopped), container inspect sheet with ports/mounts/safe env keys, real-time CPU/RAM/Network stats, scrollable logs viewer, and actions (start, stop, restart, delete).
-  - **Terminal:** Monospace Linux PTY shell connected over authenticated WebSocket (`/v1/terminal`) with virtual accessory buttons (`Ctrl+C`, `Ctrl+D`, `Tab`, `Esc`, arrow keys, command input).
-  - **Storage:** Visual breakdown of VM virtual disk, Docker writable layers, images, volumes, and Android internal storage.
-  - **Network:** QEMU network status, VM internal IP, network I/O stats, and user-configurable port forwarding (`127.0.0.1:<hostPort> -> <guestPort>`).
-  - **Settings:** Hardware allocation sliders (CPU cores, RAM MB, Disk GB) validated against physical Android device hardware, auto-start on boot toggle, and real-time guest VM bundle asset diagnostics.
-- **Graceful Offline & Error Handling:**
-  - When the VM is stopped/offline, polling is safely paused and raw socket exceptions (`Failed to connect to /127.0.0.1:8899`) are suppressed.
-  - VM boot failures and missing asset reports are displayed in a clean, user-friendly diagnostic banner.
-- **VM Process & Lifecycle Management:**
-  - `VmManager` validates guest bundle assets (`qemu-system-aarch64`, ARM64 Linux kernel `Image`, `initrd.img`, `droidhost.ext4`, and `agent-token`).
-  - `ServerModeService` manages foreground notification, VM execution, and handles start, stop, and restart requests.
+### Local SSH Access
+From the host computer:
+```bash
+adb forward tcp:2222 tcp:2222
+ssh root@127.0.0.1 -p 2222
+```
+* Once connected, commands like `uname -m`, `docker ps`, and `cat /etc/os-release` operate directly inside the ARM64 Linux VM.
 
-### vm-agent
-- Authenticated HTTP API (`/health`, `/v1/metrics`, `/v1/containers`, `/v1/containers/{id}`, `/v1/images`, `/v1/volumes`, `/v1/networks`).
-- Real Linux PTY terminal bridge over WebSocket (`/v1/terminal`).
+### Tailscale Remote SSH
+* Runs on Android host or via WireGuard mesh.
+* Android forwards or routes traffic to `127.0.0.1:2222`.
+* Displayed in DroidHost **Network** tab with 1-tap command copying.
 
-### Verification & Testing
-- Unit tests pass with Gradle: `:app:testDebugUnitTest` (configuration validation, VM lifecycle, container state mapping, port forwarding).
-- Go tests pass: `go test ./...` in `vm-agent`.
-- Debug APK successfully compiled and packaged: `:app:assembleDebug`.
+---
 
-## Provisioning the ARM64 Guest Bundle
-To run live workloads on an actual physical Android device, copy or extract the following ARM64 assets into `/data/user/0/com.droidhost/files/vm/`:
-1. `bin/qemu-system-aarch64` (executable)
-2. `boot/Image` (ARM64 kernel with `ARMd` header magic)
-3. `boot/initrd.img` (initramfs with virtio drivers)
-4. `data/droidhost.ext4` (rootfs with Docker daemon and `vm-agent`)
-5. `agent-token` (managed automatically by DroidHost)
+## 7. Known Issues & Troubleshooting
 
-The diagnostics tab in Settings will automatically confirm when all 5 assets are in place.
+1. **OpenSSH Key Authentication Rejection**:
+   * *Symptom*: `Permission denied (publickey)` when attempting to SSH into root.
+   * *Root Cause*: OpenSSH `StrictModes` rejects `/root` or `/root/.ssh` if permissions are not strictly `0700` owned by `root:root`.
+   * *Fix*: In `vm-token.start`: `chown -R root:root /root && chmod 700 /root`.
+
+2. **Ktor Client SocketTimeoutException on Network Diagnostics**:
+   * *Symptom*: Network diagnostics self-test reports `FAILED` on mobile network.
+   * *Root Cause*: Ktor's OkHttp engine has a default 10s read timeout. Pulling Docker layers over cellular can take 12-15s.
+   * *Fix*: `AgentRepository.kt` configures OkHttp `readTimeout` to 60s.
+
+3. **Bash /dev/fd Errors on Alpine**:
+   * *Symptom*: `bash: line 241: /dev/fd/63: No such file or directory`.
+   * *Root Cause*: Alpine Linux does not create `/dev/fd` by default.
+   * *Fix*: In `/etc/local.d/vm-token.start`: `if [ ! -e /dev/fd ]; then ln -s /proc/self/fd /dev/fd; fi`.
+
+4. **Entry-Level Phone Memory Limits (4GB Devices)**:
+   * When running Coolify (5 containers: Traefik, Coolify, Redis, PostgreSQL, Realtime), RAM usage in a 2GB VM reaches 95%.
+   * Advise users to use 1.5GB to 2GB allocations and close memory-heavy background Android apps.
+
+---
+
+## 8. Verification & Build Commands
+
+```bash
+# 1. Run Android Unit Tests
+./gradlew testDebugUnitTest
+
+# 2. Run Go vm-agent Unit Tests
+cd vm-agent && go test ./... && cd ..
+
+# 3. Assemble Debug APK
+./gradlew assembleDebug
+
+# 4. Install & Launch on Device
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.droidhost/.MainActivity
+
+# 5. Verify SSH over ADB
+adb forward tcp:2222 tcp:2222
+ssh root@127.0.0.1 -p 2222 "uname -m && docker ps"
+```

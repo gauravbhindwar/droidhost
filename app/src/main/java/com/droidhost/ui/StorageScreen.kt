@@ -5,23 +5,34 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.droidhost.domain.PruneType
+import com.droidhost.domain.VmState
 
 @Composable
 fun StorageScreen(
     state: DashboardState,
     viewModel: MainViewModel
 ) {
-    val vmDiskTotal = state.vmConfig.diskGb.toLong() * 1024 * 1024 * 1024
-    val vmDiskUsed = if (state.metrics.online) state.metrics.storageUsedBytes.coerceAtLeast(1024L * 1024 * 1024 * 2) else 0L
-    val androidTotal = state.deviceResources.availableStorageGb.toLong() * 1024 * 1024 * 1024
-    val androidAvailable = (state.deviceResources.availableStorageGb - state.vmConfig.diskGb).coerceAtLeast(1).toLong() * 1024 * 1024 * 1024
+    LaunchedEffect(state.vmState) {
+        if (state.vmState == VmState.RUNNING) {
+            viewModel.loadStorageBreakdown()
+        }
+    }
+
+    val breakdown = state.storageBreakdown
+    val vmDiskTotal = if (breakdown.vmDiskTotalBytes > 0) breakdown.vmDiskTotalBytes else state.vmConfig.diskGb.toLong() * 1024 * 1024 * 1024
+    val vmDiskUsed = if (breakdown.vmDiskUsedBytes > 0) breakdown.vmDiskUsedBytes else if (state.metrics.online) state.metrics.storageUsedBytes else 0L
+    val androidTotal = if (breakdown.androidTotalBytes > 0) breakdown.androidTotalBytes else state.deviceResources.availableStorageGb.toLong() * 1024 * 1024 * 1024
+    val androidAvailable = if (breakdown.androidAvailableBytes > 0) breakdown.androidAvailableBytes else (state.deviceResources.availableStorageGb - state.vmConfig.diskGb).coerceAtLeast(1).toLong() * 1024 * 1024 * 1024
+
+    var confirmPruneType by remember { mutableStateOf<PruneType?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -39,11 +50,34 @@ fun StorageScreen(
             )
         }
 
+        // Pruning banner / result
+        if (state.isPruning || state.pruneMessage != null) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (state.isPruning) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                        Text(state.pruneMessage.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
         // VM Virtual Disk Card
         item {
             StorageCard(
-                title = "ARM64 Linux Virtual Disk",
-                subtitle = "ext4 persistent image (/data/droidhost.ext4)",
+                title = "ARM64 Linux Virtual Disk (/dev/vda)",
+                subtitle = "ext4 persistent rootfs (/data/droidhost.ext4)",
                 usedBytes = vmDiskUsed,
                 totalBytes = vmDiskTotal,
                 icon = Icons.Default.Storage,
@@ -53,34 +87,96 @@ fun StorageScreen(
 
         // Docker Storage Breakdown
         item {
-            Text(
-                "DOCKER DISK USAGE",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "DOCKER SYSTEM DF",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(onClick = { viewModel.loadStorageBreakdown() }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh storage")
+                }
+            }
         }
 
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     DockerItemRow(
-                        title = "Container Writable Layers",
-                        count = "${state.containers.size} containers",
+                        title = "Container Layers",
+                        count = "${formatBytes(breakdown.dockerContainersBytes)} (${state.containers.size} containers)",
                         icon = Icons.Default.Layers
                     )
                     Divider()
                     DockerItemRow(
                         title = "Docker Images",
-                        count = "${state.images} images",
+                        count = "${formatBytes(breakdown.dockerImagesBytes)} (${state.images} images)",
                         icon = Icons.Default.PhotoLibrary
                     )
                     Divider()
                     DockerItemRow(
                         title = "Docker Volumes",
-                        count = "${state.volumes} persistent volumes",
+                        count = "${formatBytes(breakdown.dockerVolumesBytes)} (${state.volumes} volumes)",
                         icon = Icons.Default.FolderOpen
                     )
+                    Divider()
+                    DockerItemRow(
+                        title = "Build Cache",
+                        count = formatBytes(breakdown.dockerBuildCacheBytes),
+                        icon = Icons.Default.Build
+                    )
+                }
+            }
+        }
+
+        // Reclaim Storage Actions
+        if (state.vmState == VmState.RUNNING) {
+            item {
+                Text(
+                    "RECLAIM STORAGE & PRUNE",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { confirmPruneType = PruneType.IMAGES },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Prune Images", style = MaterialTheme.typography.labelSmall)
+                            }
+                            OutlinedButton(
+                                onClick = { confirmPruneType = PruneType.CONTAINERS },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Prune Containers", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { confirmPruneType = PruneType.VOLUMES },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Prune Volumes", style = MaterialTheme.typography.labelSmall)
+                            }
+                            Button(
+                                onClick = { confirmPruneType = PruneType.ALL },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Prune All", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -98,13 +194,38 @@ fun StorageScreen(
         item {
             StorageCard(
                 title = "Device Internal Storage",
-                subtitle = "Physical Android device memory",
+                subtitle = "Physical Android device internal flash",
                 usedBytes = (androidTotal - androidAvailable).coerceAtLeast(0),
                 totalBytes = androidTotal,
                 icon = Icons.Default.PhoneAndroid,
                 color = MaterialTheme.colorScheme.secondary
             )
         }
+    }
+
+    // Confirmation Alert Dialog
+    confirmPruneType?.let { pType ->
+        AlertDialog(
+            onDismissRequest = { confirmPruneType = null },
+            icon = { Icon(Icons.Default.CleaningServices, contentDescription = null) },
+            title = { Text("Prune ${pType.name.lowercase().replaceFirstChar { it.uppercase() }}") },
+            text = { Text("Are you sure you want to clean up unused Docker ${pType.name.lowercase()}? This reclaims disk space immediately.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.prune(pType)
+                        confirmPruneType = null
+                    }
+                ) {
+                    Text("Prune")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmPruneType = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -180,6 +301,7 @@ private fun DockerItemRow(title: String, count: String, icon: ImageVector) {
 }
 
 private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0) return "0 MB"
     val gb = bytes / (1024.0 * 1024.0 * 1024.0)
-    return if (gb >= 1.0) String.format("%.1f GB", gb) else "${bytes / (1024 * 1024)} MB"
+    return if (gb >= 1.0) String.format("%.2f GB", gb) else "${bytes / (1024 * 1024)} MB"
 }

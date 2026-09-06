@@ -11,11 +11,12 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -26,26 +27,52 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.droidhost.domain.DeviceResources
+import com.droidhost.domain.ServerProfile
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PreSetupDialog(
-    diskSizeGb: Int,
+    diskSizeGb: Int = 32,
+    deviceResources: DeviceResources = DeviceResources(cpuCores = 8, totalRamMb = 4096, availableStorageGb = 64),
     existingCloudflareToken: String = "",
     onDismiss: () -> Unit,
-    onStartPreSetup: (cloudflareToken: String) -> Unit
+    onStartPreSetup: (selectedProfile: ServerProfile, cloudflareToken: String) -> Unit
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
-    // Notification Permission State (Android 13+ / API 33 through Android 18+)
+    val presets = remember(deviceResources) { ServerProfile.getPresets(deviceResources) }
+    var selectedProfileName by remember { mutableStateOf("Standard") }
+
+    val defaultPreset = presets.find { it.name == "Standard" } ?: presets.first()
+    var cpuCores by remember { mutableStateOf(defaultPreset.cpuCores.toFloat()) }
+    var ramMb by remember { mutableStateOf(defaultPreset.memoryMb.toFloat()) }
+    var diskGb by remember { mutableStateOf(defaultPreset.diskGb.toFloat().coerceAtLeast(diskSizeGb.toFloat())) }
+
+    fun selectPreset(p: ServerProfile) {
+        selectedProfileName = p.name
+        if (p.name != "Custom") {
+            cpuCores = p.cpuCores.toFloat()
+            ramMb = p.memoryMb.toFloat()
+            diskGb = p.diskGb.toFloat()
+        }
+    }
+
+    val activeProfile = remember(selectedProfileName, cpuCores, ramMb, diskGb) {
+        ServerProfile(
+            name = selectedProfileName,
+            cpuCores = cpuCores.toInt(),
+            memoryMb = ramMb.toInt(),
+            diskGb = diskGb.toInt()
+        )
+    }
+
+    // Permissions
     var hasNotificationPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -65,7 +92,6 @@ fun PreSetupDialog(
         hasNotificationPermission = isGranted
     }
 
-    // Battery Optimization State
     var isBatteryExempt by remember {
         mutableStateOf(
             try {
@@ -77,10 +103,7 @@ fun PreSetupDialog(
         )
     }
 
-    // Cloudflare Tunnel token
     var cfToken by remember { mutableStateOf(existingCloudflareToken) }
-    var cfTokenVisible by remember { mutableStateOf(false) }
-    var cfTokenExpanded by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -88,22 +111,22 @@ fun PreSetupDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        Icons.Default.SettingsSuggest,
+                        Icons.Default.Dns,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
                 Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("VM Environment Pre-Setup", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Auto-configure on-device files", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("CREATE YOUR SERVER", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Choose your phone resource allocation", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         },
@@ -112,167 +135,154 @@ fun PreSetupDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(scrollState),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    "DroidHost will automatically create and initialize the Linux server environment in secure app storage (/data/user/0/com.droidhost/files/vm):",
+                    "Select a server profile for your ARM64 Linux personal server appliance:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                // Environment Components Card
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Ext4 Virtual Disk: ${diskSizeGb} GB persistent storage", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("VM Startup Script: bin/run-vm.sh (executable)", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Authentication Token: 32-byte secure bearer key", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF2A9D8F), modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("ARM64 Guest Tree: bin, boot, data, logs", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-
-                // ─── Cloudflare Tunnel Section ─────────────────────────────
-                HorizontalDivider()
-
-                Row(
+                // Profile Selection Chips
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFFF4A261), modifier = Modifier.size(18.dp))
-                        Text(
-                            "Remote Access via Cloudflare Tunnel",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    TextButton(
-                        onClick = { cfTokenExpanded = !cfTokenExpanded },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            if (cfToken.isNotEmpty()) "Configured ✓" else if (cfTokenExpanded) "Collapse" else "Set Up",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (cfToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.primary
-                        )
+                    presets.forEach { preset ->
+                        val isSelected = selectedProfileName == preset.name
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            modifier = Modifier
+                                .clickable { selectPreset(preset) }
+                                .border(
+                                    width = if (isSelected) 1.5.dp else 0.5.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                        ) {
+                            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text(
+                                    preset.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                )
+                                if (preset.name != "Custom") {
+                                    Text(
+                                        "${preset.cpuCores} CPU · ${preset.memoryMb / 1024}GB RAM · ${preset.diskGb}GB",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Text(
+                                        "Custom Sliders",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
-                if (cfTokenExpanded || cfToken.isNotEmpty()) {
-                    // Why Cloudflare?
-                    Surface(
-                        color = Color(0xFFF4A261).copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                "Why Cloudflare Tunnel?",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFF4A261)
-                            )
-                            Text(
-                                "Your phone's IP changes constantly (DHCP) and mobile networks (4G/5G) use CGNAT which blocks direct inbound connections. Cloudflare Tunnel creates a permanent public route to your server without port forwarding — accessible from anywhere in the world.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "How to get your token:",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                "1. Go to one.dash.cloudflare.com\n2. Networks → Tunnels → Create a Tunnel\n3. Name it \"droidhost\" → Save\n4. Copy the tunnel token shown",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Default,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    // Token Input
-                    OutlinedTextField(
-                        value = cfToken,
-                        onValueChange = { cfToken = it },
-                        label = { Text("Cloudflare Tunnel Token") },
-                        placeholder = { Text("eyJhIjoiY...") },
-                        supportingText = {
-                            Text(
-                                if (cfToken.isNotEmpty()) "✓ Token saved locally on device only" else "Optional — you can set this later from the Network screen",
-                                color = if (cfToken.isNotEmpty()) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = { cfTokenVisible = !cfTokenVisible }) {
-                                Icon(
-                                    if (cfTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = null
+                // Custom Sliders if Custom selected
+                if (selectedProfileName == "Custom") {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            // CPU
+                            Column {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("CPU Cores: ${cpuCores.toInt()}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text("Max: ${deviceResources.cpuCores}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Slider(
+                                    value = cpuCores,
+                                    onValueChange = { cpuCores = it },
+                                    valueRange = 1f..deviceResources.cpuCores.toFloat().coerceAtLeast(1f),
+                                    steps = (deviceResources.cpuCores - 2).coerceAtLeast(0)
                                 )
                             }
-                        },
-                        visualTransformation = if (cfTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Security badge
-                    Surface(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            Modifier.padding(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(
-                                "Stored 100% locally in encrypted app storage on this device — never uploaded to any server or cloud.",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 11.sp
-                            )
+                            // RAM
+                            Column {
+                                val maxRam = (deviceResources.totalRamMb * 3 / 4).coerceAtLeast(1024)
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("RAM: ${ramMb.toInt()} MB", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text("Max: $maxRam MB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Slider(
+                                    value = ramMb,
+                                    onValueChange = { ramMb = it },
+                                    valueRange = 512f..maxRam.toFloat(),
+                                    steps = ((maxRam - 512) / 512).coerceAtLeast(0)
+                                )
+                            }
+                            // Disk
+                            Column {
+                                val maxDisk = (deviceResources.availableStorageGb - 2).coerceAtLeast(8)
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Virtual Disk: ${diskGb.toInt()} GB", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text("Max: $maxDisk GB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Slider(
+                                    value = diskGb,
+                                    onValueChange = { diskGb = it },
+                                    valueRange = 8f..maxDisk.toFloat(),
+                                    steps = (maxDisk - 9).coerceAtLeast(0)
+                                )
+                            }
                         }
                     }
                 }
 
-                // ─── Android Permissions ───────────────────────────────────
-                HorizontalDivider()
+                // Server Summary Card
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "SERVER SUMMARY",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("CPU Cores", style = MaterialTheme.typography.bodySmall)
+                            Text("${activeProfile.cpuCores} cores", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("RAM Memory", style = MaterialTheme.typography.bodySmall)
+                            Text("${activeProfile.memoryMb} MB (${activeProfile.memoryMb / 1024} GB)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Virtual Disk Capacity", style = MaterialTheme.typography.bodySmall)
+                            Text("${activeProfile.diskGb} GB", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = Color(0xFF2A9D8F))
+                        }
+                        HorizontalDivider()
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Android Storage Available", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${deviceResources.availableStorageGb} GB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Estimated Initial Disk Usage", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("~500 MB (Sparse)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
 
+                // Permissions & 24/7 background mode
+                HorizontalDivider()
                 Text(
                     "System Permissions (Android ${Build.VERSION.RELEASE ?: "14+"}):",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold
                 )
 
-                // Notification Permission Row (Android 13+)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -284,30 +294,24 @@ fun PreSetupDialog(
                                 if (hasNotificationPermission) Icons.Default.NotificationsActive else Icons.Default.NotificationsOff,
                                 contentDescription = null,
                                 tint = if (hasNotificationPermission) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text("Notifications", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    if (hasNotificationPermission) "Allowed" else "Required for background server",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (hasNotificationPermission) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error
-                                )
-                            }
+                            Text("Notification Status", style = MaterialTheme.typography.bodySmall)
                         }
                         if (!hasNotificationPermission) {
                             OutlinedButton(
                                 onClick = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 Text("Grant", style = MaterialTheme.typography.labelSmall)
                             }
+                        } else {
+                            Text("Granted ✓", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2A9D8F))
                         }
                     }
                 }
 
-                // Battery Optimization Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -318,17 +322,10 @@ fun PreSetupDialog(
                             if (isBatteryExempt) Icons.Default.BatteryChargingFull else Icons.Default.BatteryAlert,
                             contentDescription = null,
                             tint = if (isBatteryExempt) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text("Battery Optimization", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                if (isBatteryExempt) "Unrestricted (24/7 Server)" else "Restricted (May pause in background)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isBatteryExempt) Color(0xFF2A9D8F) else MaterialTheme.colorScheme.error
-                            )
-                        }
+                        Text("24/7 Server Mode", style = MaterialTheme.typography.bodySmall)
                     }
                     if (!isBatteryExempt) {
                         OutlinedButton(
@@ -340,10 +337,12 @@ fun PreSetupDialog(
                                     context.startActivity(intent)
                                 } catch (_: Exception) {}
                             },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                         ) {
-                            Text("Disable", style = MaterialTheme.typography.labelSmall)
+                            Text("Disable Sleep", style = MaterialTheme.typography.labelSmall)
                         }
+                    } else {
+                        Text("Active ✓", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2A9D8F))
                     }
                 }
             }
@@ -351,14 +350,14 @@ fun PreSetupDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onStartPreSetup(cfToken.trim())
+                    onStartPreSetup(activeProfile, cfToken.trim())
                     onDismiss()
                 },
                 shape = RoundedCornerShape(10.dp)
             ) {
                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Initialize Setup")
+                Text("Create & Start Server")
             }
         },
         dismissButton = {

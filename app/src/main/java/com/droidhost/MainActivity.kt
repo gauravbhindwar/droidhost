@@ -47,8 +47,22 @@ class MainActivity : ComponentActivity() {
             Intent(this, ServerModeService::class.java).setAction(ServerModeService.ACTION_START)
         )
         setContent {
-            val agentToken = getSharedPreferences("agent", MODE_PRIVATE).getString("token", "").orEmpty()
-            DroidHostApp(agentToken = agentToken)
+            val tokenFile = java.io.File(filesDir, "vm/agent-token")
+            val tokenFromFile = try { if (tokenFile.exists()) tokenFile.readText().trim() else "" } catch (_: Exception) { "" }
+            val prefsToken = getSharedPreferences("agent", MODE_PRIVATE).getString("token", "").orEmpty().trim()
+            val effectiveToken = when {
+                tokenFromFile.isNotEmpty() -> {
+                    getSharedPreferences("agent", MODE_PRIVATE).edit().putString("token", tokenFromFile).apply()
+                    tokenFromFile
+                }
+                prefsToken.isNotEmpty() -> prefsToken
+                else -> {
+                    val gen = java.util.UUID.randomUUID().toString().replace("-", "")
+                    getSharedPreferences("agent", MODE_PRIVATE).edit().putString("token", gen).apply()
+                    gen
+                }
+            }
+            DroidHostApp(agentToken = effectiveToken)
         }
     }
 }
@@ -57,15 +71,26 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DroidHostApp(agentToken: String) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val repository = remember { HttpAgentRepository("http://127.0.0.1:8899", agentToken) }
+    val tokenProvider: () -> String = remember {
+        {
+            val f = java.io.File(context.filesDir, "vm/agent-token")
+            if (f.exists() && f.length() > 0) f.readText().trim()
+            else {
+                val f2 = java.io.File(context.filesDir, "agent-token")
+                if (f2.exists() && f2.length() > 0) f2.readText().trim() else agentToken
+            }
+        }
+    }
+    val repository = remember { HttpAgentRepository("http://127.0.0.1:8899", tokenProvider = tokenProvider) }
     val vmManager = remember { VmManager.getInstance(context, repository) }
-    val terminalRepository = remember { WebSocketTerminalRepository("ws://127.0.0.1:8899/v1/terminal", agentToken) }
+    val terminalRepository = remember { WebSocketTerminalRepository("ws://127.0.0.1:8899/v1/terminal", tokenProvider = tokenProvider) }
 
     val vm = remember {
         MainViewModel(
             repository = repository,
             vmManager = vmManager,
             terminalRepository = terminalRepository,
+            tokenProvider = tokenProvider,
             context = context
         )
     }
